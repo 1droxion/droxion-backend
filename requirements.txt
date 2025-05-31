@@ -6,3 +6,5 @@ pexels_api
 requests
 python-dotenv
 gunicorn
+moviepy
+
