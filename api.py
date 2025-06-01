@@ -11,10 +11,9 @@ import requests
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True, origins=[
-    "https://droxion-live-final.vercel.app",
-    "https://droxion-live-final-1edhk8ra5-suchitbhai-g-patel.vercel.app"
-])
+
+# ✅ Updated: Allow all origins during development; restrict later in production
+CORS(app, supports_credentials=True, origins="*")
 
 # === Public Folder ===
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
@@ -117,7 +116,7 @@ def user_stats():
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
 
-# ✅ Free AI Chat (no API, custom logic)
+# ✅ Free AI Chat endpoint
 @app.route("/chat", methods=["POST"])
 def chat_with_ai():
     data = request.json
@@ -126,7 +125,6 @@ def chat_with_ai():
     if not user_message:
         return jsonify({"reply": "Please ask something like 'how to create a reel' or 'what is Droxion'."})
 
-    # Smart logic for free chat
     if "droxion" in user_message or "what is this" in user_message:
         reply = "🤖 Droxion is an AI-powered content creation system. It helps you generate voice-over videos, edit automatically, add styles, and post reels — all using AI automation. Perfect for creators and marketers."
     elif "video" in user_message:
