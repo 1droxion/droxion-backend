@@ -12,22 +12,22 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Enable CORS for your frontend domain
+# ✅ CORS: Allow frontend (change or restrict if needed)
 CORS(app, supports_credentials=True, origins=[
-    "https://droxion-live-final.vercel.app",  # generic
-    "https://droxion-live-final-8g6e74269-suchitbhai-g-patel.vercel.app"  # your deployment
+    "https://droxion-live-final.vercel.app",
+    "https://droxion-live-final-1edhk8ra5-suchitbhai-g-patel.vercel.app"
 ])
 
-# Folder where public files like videos/images are stored
+# ✅ Public files folder
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 if not os.path.exists(PUBLIC_FOLDER):
     os.makedirs(PUBLIC_FOLDER)
 
 @app.route("/")
 def home():
-    return "✅ Droxion API running..."
+    return "✅ Droxion API is live."
 
-# ✅ Upload image
+# ✅ Upload image endpoint
 @app.route("/upload-image", methods=["POST"])
 def upload_image():
     if "image" not in request.files:
@@ -45,7 +45,7 @@ def ai_style():
     try:
         data = request.json
         style = data.get("style", "Ghibli")
-        print(f"🎨 Style request received: {style}")
+        print(f"🎨 Style request: {style}")
 
         subprocess.run(["python", "src/ai_style_transform.py", style], check=True)
 
@@ -57,7 +57,7 @@ def ai_style():
         print("❌ AI Style Error:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# ✅ Generate Video Endpoint
+# ✅ Generate video
 @app.route("/generate", methods=["POST"])
 def generate():
     data = request.json
@@ -95,7 +95,7 @@ def generate():
         print("❌ Generation Error:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# ✅ List all videos
+# ✅ List videos
 @app.route("/videos", methods=["GET"])
 def list_videos():
     files = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
@@ -113,7 +113,7 @@ def list_videos():
     result.sort(key=lambda x: x['date'], reverse=True)
     return jsonify(result)
 
-# ✅ Delete video
+# ✅ Delete a video
 @app.route("/delete/<filename>", methods=["DELETE"])
 def delete_video(filename):
     try:
@@ -125,12 +125,12 @@ def delete_video(filename):
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# ✅ Serve public files (videos/images)
+# ✅ Serve video/image
 @app.route("/<filename>")
 def serve_file(filename):
     return send_from_directory(PUBLIC_FOLDER, filename)
 
-# ✅ Chat with AI
+# ✅ Chat (OpenRouter)
 @app.route("/chat", methods=["POST"])
 def chat_with_ai():
     data = request.json
@@ -154,7 +154,7 @@ def chat_with_ai():
         print("❌ Chat API Error:", e)
         return jsonify({"error": "OpenAI call failed", "details": str(e)}), 500
 
-# ✅ User stats
+# ✅ User stats (frontend)
 @app.route("/user-stats", methods=["GET"])
 def user_stats():
     try:
