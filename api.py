@@ -7,18 +7,18 @@ import json
 from datetime import datetime
 import requests
 
-# Load .env if present
+# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Allow specific Vercel frontend domains
+# ✅ ALLOW BOTH VERCEL DEPLOY URLs
 CORS(app, supports_credentials=True, origins=[
     "https://droxion-live-final.vercel.app",
     "https://droxion-live-final-2mbzbsnpv-suchitbhai-g-patel.vercel.app"
 ])
 
-# === Public Folder Setup ===
+# === Public folder setup ===
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 if not os.path.exists(PUBLIC_FOLDER):
     os.makedirs(PUBLIC_FOLDER)
@@ -50,7 +50,6 @@ def ai_style():
     try:
         data = request.json
         style = data.get("style", "Ghibli")
-        print(f"🎨 Style request: {style}")
         subprocess.run(["python", "src/ai_style_transform.py", style], check=True)
         return jsonify({"status": "success", "styledUrl": "/styled_output.png"})
     except Exception as e:
@@ -122,7 +121,7 @@ def user_stats():
             "credits": 18,
             "videosThisMonth": len([f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]),
             "imagesThisMonth": len([f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".png") and "styled" in f]),
-            "autoGenerates": 6,  # Replace with database logic if needed
+            "autoGenerates": 6,
             "plan": {
                 "name": "Starter",
                 "videoLimit": 5,
