@@ -7,13 +7,18 @@ import json
 from datetime import datetime
 import requests
 
-# Load environment variables
+# Load .env if present
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True, origins="*")
 
-# === Public Folder ===
+# ✅ Allow specific Vercel frontend domains
+CORS(app, supports_credentials=True, origins=[
+    "https://droxion-live-final.vercel.app",
+    "https://droxion-live-final-2mbzbsnpv-suchitbhai-g-patel.vercel.app"
+])
+
+# === Public Folder Setup ===
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 if not os.path.exists(PUBLIC_FOLDER):
     os.makedirs(PUBLIC_FOLDER)
@@ -117,7 +122,7 @@ def user_stats():
             "credits": 18,
             "videosThisMonth": len([f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]),
             "imagesThisMonth": len([f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".png") and "styled" in f]),
-            "autoGenerates": 6,  # Simulated count — replace with DB later
+            "autoGenerates": 6,  # Replace with database logic if needed
             "plan": {
                 "name": "Starter",
                 "videoLimit": 5,
