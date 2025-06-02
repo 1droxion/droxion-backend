@@ -1,12 +1,5 @@
-from flask import Blueprint, jsonify
-import os
-from datetime import datetime
-
-PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
-user_stats = Blueprint("user_stats", __name__)
-
-@user_stats.route("/user-stats", methods=["GET"])
-def get_user_stats():
+@app.route("/user-stats", methods=["GET"])
+def user_stats():
     try:
         plan = {
             "name": "Starter",
@@ -17,7 +10,7 @@ def get_user_stats():
 
         videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
         images = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".png") and "styled" in f]
-        auto_generates = 6  # Replace with actual tracking later
+        auto_generates = 6  # Replace with actual tracking if needed
 
         stats = {
             "credits": 18,
