@@ -11,8 +11,6 @@ import requests
 load_dotenv()
 
 app = Flask(__name__)
-
-# ✅ Updated: Allow all origins during development; restrict later in production
 CORS(app, supports_credentials=True, origins="*")
 
 # === Public Folder ===
@@ -32,6 +30,15 @@ def upload_image():
     input_path = os.path.join(PUBLIC_FOLDER, "style_input.png")
     image.save(input_path)
     return jsonify({"status": "success", "image_url": "/style_input.png"})
+
+@app.route("/upload-avatar", methods=["POST"])
+def upload_avatar():
+    if "avatar" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    file = request.files["avatar"]
+    path = os.path.join(PUBLIC_FOLDER, "avatar.png")
+    file.save(path)
+    return jsonify({"url": f"/avatar.png"})
 
 @app.route("/ai-style", methods=["POST"])
 def ai_style():
@@ -109,14 +116,20 @@ def user_stats():
         stats = {
             "credits": 18,
             "videosThisMonth": len([f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]),
-            "plan": {"name": "Starter", "limit": 5}
+            "imagesThisMonth": len([f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".png") and "styled" in f]),
+            "autoGenerates": 6,  # Simulated count — replace with DB later
+            "plan": {
+                "name": "Starter",
+                "videoLimit": 5,
+                "imageLimit": 20,
+                "autoLimit": 10
+            }
         }
         return jsonify(stats)
     except Exception as e:
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
 
-# ✅ Free AI Chat endpoint
 @app.route("/chat", methods=["POST"])
 def chat_with_ai():
     data = request.json
