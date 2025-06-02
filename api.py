@@ -11,12 +11,10 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Fixed: Allow only your Vercel frontend (no wildcard "*")
-CORS(app, supports_credentials=True, origins=[
-    "https://droxion-live-final-k1ciit8mj-suchitbhai-g-patel.vercel.app",
-    "http://localhost:5173"
-])
+# ✅ Enable CORS for all origins during dev; vercel handled below
+CORS(app, supports_credentials=True)
 
+# ✅ Allow dynamic Vercel frontend URLs (like preview and production)
 @app.after_request
 def allow_vercel_preview(response):
     origin = request.headers.get("Origin")
