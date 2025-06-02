@@ -16,13 +16,16 @@ app = Flask(__name__)
 CORS(app, supports_credentials=True)
 
 @app.after_request
-def allow_vercel_preview(response):
+def allow_all_frontends(response):
     origin = request.headers.get("Origin")
-    if origin and "vercel.app" in origin:
+    allowed = ["vercel.app", "droxion.com"]
+
+    if origin and any(allowed_domain in origin for allowed_domain in allowed):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
+
     if request.method == "OPTIONS":
         response.status_code = 200
     return response
