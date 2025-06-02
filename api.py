@@ -5,18 +5,24 @@ import subprocess
 import os
 import json
 from datetime import datetime
-import requests
 
-# Load environment variables
+# Load .env if available
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ ALLOW BOTH VERCEL DEPLOY URLs
-CORS(app, supports_credentials=True, origins=[
-    "https://droxion-live-final.vercel.app",
-    "https://droxion-live-final-2mbzbsnpv-suchitbhai-g-patel.vercel.app"
-])
+# ✅ Enable CORS for all origins dynamically (supports all Vercel URLs)
+CORS(app, supports_credentials=True)
+
+@app.after_request
+def allow_vercel_preview(response):
+    origin = request.headers.get("Origin")
+    if origin and "vercel.app" in origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, DELETE"
+    return response
 
 # === Public folder setup ===
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
