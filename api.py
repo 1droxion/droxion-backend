@@ -5,24 +5,26 @@ import subprocess
 import os
 import json
 from datetime import datetime
+import requests  # ✅ Needed for OpenRouter
 
 # Load .env if available
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Enable CORS for all origins during dev; vercel handled below
+# ✅ CORS support
 CORS(app, supports_credentials=True)
 
-# ✅ Allow dynamic Vercel frontend URLs (like preview and production)
 @app.after_request
 def allow_vercel_preview(response):
     origin = request.headers.get("Origin")
     if origin and "vercel.app" in origin:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, DELETE"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
+    if request.method == "OPTIONS":
+        response.status_code = 200
     return response
 
 # === Public folder setup ===
@@ -141,26 +143,38 @@ def user_stats():
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
 
+# ✅ OpenRouter-based Chat
 @app.route("/chat", methods=["POST"])
-def chat_with_ai():
+def chat_with_openrouter():
     data = request.json
-    user_message = data.get("message", "").strip().lower()
+    user_message = data.get("message", "")
 
     if not user_message:
-        return jsonify({"reply": "Please ask something like 'how to create a reel' or 'what is Droxion'."})
+        return jsonify({"reply": "❌ Empty message. Please ask something."}), 400
 
-    if "droxion" in user_message or "what is this" in user_message:
-        reply = "🤖 Droxion is an AI-powered content creation system. It helps you generate voice-over videos, edit automatically, add styles, and post reels — all using AI automation. Perfect for creators and marketers."
-    elif "video" in user_message:
-        reply = "🎥 To generate a video, go to the Generator tab, enter your topic, pick a voice and style, then click Generate!"
-    elif "voice" in user_message:
-        reply = "🗣️ Voice is added automatically using AI. You can choose between voices or use Hindi/English text."
-    elif "help" in user_message or "how" in user_message:
-        reply = "🆘 Need help? You can ask how to generate reels, upload styles, or manage credits. I'm here to assist!"
-    else:
-        reply = f"🤖 You said: \"{user_message}\" — I’ll support more smart responses soon. Keep exploring Droxion!"
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "openai/gpt-3.5-turbo",
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant inside the Droxion platform. Reply simply and clearly."},
+                    {"role": "user", "content": user_message}
+                ]
+            }
+        )
 
-    return jsonify({"reply": reply})
+        result = response.json()
+        reply = result["choices"][0]["message"]["content"]
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        print("❌ OpenRouter Chat Error:", e)
+        return jsonify({"reply": "⚠️ Error contacting AI. Please try again."}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
