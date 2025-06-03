@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 import requests  # ✅ Needed for OpenRouter
 
-# Load .env if available
+# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
@@ -17,15 +17,14 @@ CORS(app, supports_credentials=True)
 def allow_all_frontends(response):
     origin = request.headers.get("Origin")
     allowed = ["vercel.app", "droxion.com"]
-    if origin and any(allowed_domain in origin for allowed_domain in allowed):
+    if origin and any(domain in origin for domain in allowed):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
-    if request.method == "OPTIONS":
-        response.status_code = 200
     return response
 
+# === Public folder ===
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 if not os.path.exists(PUBLIC_FOLDER):
     os.makedirs(PUBLIC_FOLDER)
@@ -39,8 +38,8 @@ def upload_image():
     if "image" not in request.files:
         return jsonify({"error": "No image received"}), 400
     image = request.files["image"]
-    input_path = os.path.join(PUBLIC_FOLDER, "style_input.png")
-    image.save(input_path)
+    path = os.path.join(PUBLIC_FOLDER, "style_input.png")
+    image.save(path)
     return jsonify({"status": "success", "image_url": "/style_input.png"})
 
 @app.route("/upload-avatar", methods=["POST"])
@@ -99,8 +98,8 @@ def list_videos():
     files = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
     result = []
     for file in files:
-        filepath = os.path.join(PUBLIC_FOLDER, file)
-        created_time = os.path.getctime(filepath)
+        path = os.path.join(PUBLIC_FOLDER, file)
+        created_time = os.path.getctime(path)
         formatted_time = datetime.fromtimestamp(created_time).strftime("%Y-%m-%d %H:%M:%S")
         result.append({"filename": file, "date": formatted_time})
     result.sort(key=lambda x: x['date'], reverse=True)
@@ -169,14 +168,12 @@ def chat_with_openrouter():
         print("❌ OpenRouter Chat Error:", e)
         return jsonify({"reply": "⚠️ Error contacting AI. Please try again."}), 500
 
-# ✅ NEW: AI Code Generator Endpoint
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.json
     prompt = data.get("prompt", "")
     if not prompt:
         return jsonify({"error": "Prompt is required."}), 400
-
     try:
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
