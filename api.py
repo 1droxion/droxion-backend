@@ -7,24 +7,12 @@ import requests
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True)
 
-@app.after_request
-def allow_all_frontends(response):
-    origin = request.headers.get("Origin")
-    allowed = [
-        "vercel.app",
-        "droxion.com",
-        "droxion-live-final-ncl9al81n-suchitbhai-g-patel.vercel.app"  # ✅ YOUR frontend domain
-    ]
-    if origin and any(domain in origin for domain in allowed):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
-    if request.method == "OPTIONS":
-        response.status_code = 200
-    return response
+# ✅ Explicitly allow only frontend domains
+CORS(app, supports_credentials=True, origins=[
+    "https://droxion-live-final-fxhhgpmx-suchitbhai-g-patel.vercel.app",
+    "https://droxion.com"
+])
 
 @app.route("/")
 def home():
