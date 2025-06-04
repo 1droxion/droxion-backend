@@ -9,9 +9,11 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Correct CORS configuration
+# ✅ CORS with all allowed frontend domains (Vercel + custom domain)
 CORS(app, supports_credentials=True, origins=[
+    "https://droxion-live-final-hajva0c5c-suchitbhai-g-patel.vercel.app",
     "https://droxion-live-final-7akpddwp-suchitbhai-g-patel.vercel.app",
+    "https://www.droxion.com",
     "https://droxion.com"
 ])
 
@@ -19,7 +21,7 @@ CORS(app, supports_credentials=True, origins=[
 def home():
     return "✅ Droxion API (code generator) is live."
 
-# ✅ CORS test route
+# ✅ Test route to confirm CORS working
 @app.route("/test", methods=["GET", "OPTIONS"])
 def test_cors():
     return jsonify({"message": "CORS is working correctly!"})
