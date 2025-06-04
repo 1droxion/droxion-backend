@@ -4,26 +4,24 @@ from dotenv import load_dotenv
 import os
 import requests
 
-# Load environment variables
+# Load environment variables from .env file
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Add all current frontend Vercel links here
+# ✅ Correct CORS configuration with all frontend URLs
 CORS(app, supports_credentials=True, origins=[
-    "https://droxion-live-final-6sgs09n9c-suchitbhai-g-patel.vercel.app",
+    "https://droxion.com",
     "https://www.droxion.com",
-    "https://droxion.com"
+    "https://droxion-live-final.vercel.app",
+    "https://droxion-live-final-6sgs09n9c-suchitbhai-g-patel.vercel.app",
 ])
 
 @app.route("/")
 def home():
-    return "✅ Droxion API (code generator) is live."
+    return "✅ Droxion API is live."
 
-@app.route("/test", methods=["GET", "OPTIONS"])
-def test_cors():
-    return jsonify({"message": "CORS is working correctly!"})
-
+# ✅ Code Generator Endpoint
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.json
@@ -49,11 +47,17 @@ def generate_code():
                 ]
             }
         )
-        reply = response.json()["choices"][0]["message"]["content"]
-        return jsonify({"code": reply})
+        result = response.json()
+        code = result["choices"][0]["message"]["content"]
+        return jsonify({"code": code})
     except Exception as e:
         print("❌ Code Generation Error:", e)
         return jsonify({"error": "Failed to generate code."}), 500
+
+# ✅ Example fallback endpoint (optional)
+@app.route("/test")
+def test():
+    return jsonify({"message": "CORS and backend working!"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
