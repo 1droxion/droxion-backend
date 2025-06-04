@@ -4,19 +4,25 @@ from dotenv import load_dotenv
 import os
 import requests
 
+# Load environment variables from .env file
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Explicitly allow only frontend domains
+# ✅ Correct CORS configuration
 CORS(app, supports_credentials=True, origins=[
-    "https://droxion-live-final-fxhhgpmx-suchitbhai-g-patel.vercel.app",
+    "https://droxion-live-final-7akpddwp-suchitbhai-g-patel.vercel.app",
     "https://droxion.com"
 ])
 
 @app.route("/")
 def home():
     return "✅ Droxion API (code generator) is live."
+
+# ✅ CORS test route
+@app.route("/test", methods=["GET", "OPTIONS"])
+def test_cors():
+    return jsonify({"message": "CORS is working correctly!"})
 
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
