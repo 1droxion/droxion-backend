@@ -10,7 +10,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Allow all *.vercel.app frontend + droxion.com using regex
+# ✅ Allow *.vercel.app and droxion.com/www.droxion.com
 allowed_origin_regex = re.compile(
     r"^https:\/\/(.*\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$"
 )
@@ -83,7 +83,7 @@ def chat():
         print("❌ Chat Error:", e)
         return jsonify({"error": "Failed to process chat."}), 500
 
-# ✅ CORS test endpoint
+# ✅ CORS Test
 @app.route("/test")
 def test():
     return jsonify({"message": "CORS is working!"})
