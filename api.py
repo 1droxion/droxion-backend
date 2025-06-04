@@ -10,9 +10,9 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Allow *.vercel.app and droxion.com/www.droxion.com
+# ✅ Updated: match any droxion*.vercel.app + droxion.com
 allowed_origin_regex = re.compile(
-    r"^https:\/\/(.*\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$"
+    r"^https:\/\/([a-zA-Z0-9\-]+\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$"
 )
 CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 
@@ -20,7 +20,6 @@ CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 def home():
     return "✅ Droxion API is live."
 
-# ✅ Code Generator Endpoint
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.json
@@ -53,7 +52,6 @@ def generate_code():
         print("❌ Code Generation Error:", e)
         return jsonify({"error": "Failed to generate code."}), 500
 
-# ✅ AI Chat Endpoint
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -83,7 +81,6 @@ def chat():
         print("❌ Chat Error:", e)
         return jsonify({"error": "Failed to process chat."}), 500
 
-# ✅ CORS Test
 @app.route("/test")
 def test():
     return jsonify({"message": "CORS is working!"})
