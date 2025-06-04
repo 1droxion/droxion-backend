@@ -5,29 +5,22 @@ import os
 import requests
 import re
 
-# Load .env variables
+# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ CORS: Accept all Vercel subdomains and production domains using custom function
-def custom_cors_origin(origin):
-    allowed_domains = [
-        "https://droxion.com",
-        "https://www.droxion.com"
-    ]
-    if origin in allowed_domains:
-        return True
-    # Match any droxion-live-final-[hash].vercel.app
-    return bool(re.match(r"^https:\/\/droxion-live-final.*\.vercel\.app$", origin))
-
-CORS(app, origins=custom_cors_origin, supports_credentials=True)
+# ✅ Allow all *.vercel.app frontend + droxion.com using regex
+allowed_origin_regex = re.compile(
+    r"^https:\/\/(.*\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$"
+)
+CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
 
-# ✅ Code generation endpoint
+# ✅ Code Generator Endpoint
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.json
@@ -60,10 +53,40 @@ def generate_code():
         print("❌ Code Generation Error:", e)
         return jsonify({"error": "Failed to generate code."}), 500
 
-# ✅ CORS Test endpoint
+# ✅ AI Chat Endpoint
+@app.route("/chat", methods=["POST"])
+def chat():
+    data = request.json
+    message = data.get("message", "")
+    if not message:
+        return jsonify({"error": "Message is required."}), 400
+
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "openai/gpt-3.5-turbo",
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": message}
+                ]
+            }
+        )
+        result = response.json()
+        reply = result["choices"][0]["message"]["content"]
+        return jsonify({"reply": reply})
+    except Exception as e:
+        print("❌ Chat Error:", e)
+        return jsonify({"error": "Failed to process chat."}), 500
+
+# ✅ CORS test endpoint
 @app.route("/test")
 def test():
-    return jsonify({"message": "CORS and backend working!"})
+    return jsonify({"message": "CORS is working!"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
