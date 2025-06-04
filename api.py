@@ -9,24 +9,24 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Add all your live frontend domains here
+# ✅ Add all current frontend Vercel links here
 CORS(app, supports_credentials=True, origins=[
     "https://droxion-live-final-6sgs09n9c-suchitbhai-g-patel.vercel.app",
     "https://www.droxion.com",
-    "https://droxion.com",
+    "https://droxion.com"
 ])
 
 @app.route("/")
 def home():
     return "✅ Droxion API (code generator) is live."
 
-@app.route("/test", methods=["GET"])
-def test():
-    return jsonify({"message": "CORS and backend working ✅"})
+@app.route("/test", methods=["GET", "OPTIONS"])
+def test_cors():
+    return jsonify({"message": "CORS is working correctly!"})
 
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
-    data = request.get_json()
+    data = request.json
     prompt = data.get("prompt", "")
     if not prompt:
         return jsonify({"error": "Prompt is required."}), 400
