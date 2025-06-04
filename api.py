@@ -3,25 +3,31 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 import requests
+import re
 
-# Load environment variables from .env file
+# Load .env variables
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Correct CORS configuration with all frontend URLs
-CORS(app, supports_credentials=True, origins=[
-    "https://droxion.com",
-    "https://www.droxion.com",
-    "https://droxion-live-final.vercel.app",
-    "https://droxion-live-final-6sgs09n9c-suchitbhai-g-patel.vercel.app",
-])
+# ✅ CORS: Accept all Vercel subdomains and production domains using custom function
+def custom_cors_origin(origin):
+    allowed_domains = [
+        "https://droxion.com",
+        "https://www.droxion.com"
+    ]
+    if origin in allowed_domains:
+        return True
+    # Match any droxion-live-final-[hash].vercel.app
+    return bool(re.match(r"^https:\/\/droxion-live-final.*\.vercel\.app$", origin))
+
+CORS(app, origins=custom_cors_origin, supports_credentials=True)
 
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
 
-# ✅ Code Generator Endpoint
+# ✅ Code generation endpoint
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.json
@@ -54,7 +60,7 @@ def generate_code():
         print("❌ Code Generation Error:", e)
         return jsonify({"error": "Failed to generate code."}), 500
 
-# ✅ Example fallback endpoint (optional)
+# ✅ CORS Test endpoint
 @app.route("/test")
 def test():
     return jsonify({"message": "CORS and backend working!"})
