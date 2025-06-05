@@ -35,7 +35,7 @@ def generate_image():
                 "Content-Type": "application/json"
             },
             json={
-                "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+                "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",  # ✅ Stable SDXL
                 "input": {
                     "prompt": prompt,
                     "width": 1024,
@@ -49,12 +49,13 @@ def generate_image():
 
         result = response.json()
 
-        if "output" not in result or not result["output"]:
-            print("❌ Replicate returned:", result)
-            return jsonify({"error": "Replicate API failed", "details": result}), 500
-
-        image_url = result["output"][0]
-        return jsonify({"url": image_url})
+        # ✅ Safely check for output
+        if "output" in result and isinstance(result["output"], list) and len(result["output"]) > 0:
+            image_url = result["output"][0]
+            return jsonify({"url": image_url})
+        else:
+            print("❌ No output in Replicate response:", result)
+            return jsonify({"error": "Replicate did not return image output.", "details": result}), 500
 
     except Exception as e:
         print("❌ Image Generation Error:", e)
