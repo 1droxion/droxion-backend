@@ -1,0 +1,3 @@
+# .env.example (safe to commit)
+OPENROUTER_API_KEY=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
+REPLICATE_API_TOKEN=
