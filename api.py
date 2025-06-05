@@ -3,24 +3,22 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 import requests
-import re
 
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Allow all *.vercel.app and droxion.com (frontend) via regex
-allowed_origin_regex = re.compile(
-    r"^https:\/\/(.*\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$|^https:\/\/droxion\.com$"
-)
-CORS(app, origins=allowed_origin_regex, supports_credentials=True)
-
+# ✅ CORS: Allow your Vercel and Droxion domains
+CORS(app, supports_credentials=True, origins=[
+    "https://droxion-live-final.vercel.app",
+    "https://www.droxion.com",
+    "https://droxion.com"
+])
 
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
-
 
 # ✅ Code Generation Endpoint
 @app.route("/generate-code", methods=["POST"])
@@ -55,7 +53,6 @@ def generate_code():
         print("❌ Code Generation Error:", e)
         return jsonify({"error": "Failed to generate code."}), 500
 
-
 # ✅ AI Chat Endpoint
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -86,12 +83,10 @@ def chat():
         print("❌ Chat Error:", e)
         return jsonify({"error": "Failed to process chat."}), 500
 
-
 # ✅ Test endpoint
 @app.route("/test")
 def test():
     return jsonify({"message": "CORS is working!"})
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
