@@ -16,9 +16,11 @@ allowed_origin_regex = re.compile(
 )
 CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 
+
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
+
 
 # ✅ Code Generation Endpoint
 @app.route("/generate-code", methods=["POST"])
@@ -53,7 +55,8 @@ def generate_code():
         print("❌ Code Generation Error:", e)
         return jsonify({"error": "Failed to generate code."}), 500
 
-# ✅ Chat Endpoint (still working)
+
+# ✅ AI Chat Endpoint
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -83,9 +86,12 @@ def chat():
         print("❌ Chat Error:", e)
         return jsonify({"error": "Failed to process chat."}), 500
 
+
+# ✅ Test endpoint
 @app.route("/test")
 def test():
-    return jsonify({"message": "Backend CORS working!"})
+    return jsonify({"message": "CORS is working!"})
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
