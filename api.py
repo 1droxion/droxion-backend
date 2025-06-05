@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # ✅ Allow all *.vercel.app and droxion.com (frontend) via regex
 allowed_origin_regex = re.compile(
-    r"^https:\/\/(.*\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$"
+    r"^https:\/\/(.*\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$|^https:\/\/droxion\.com$"
 )
 CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 
