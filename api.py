@@ -10,9 +10,9 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Allow droxion.com, www.droxion.com, all vercel.app subdomains
+# ✅ Allow all *.vercel.app and droxion.com (frontend) via regex
 allowed_origin_regex = re.compile(
-    r"^https:\/\/(www\.)?droxion\.com$|^https:\/\/(.*\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
+    r"^https:\/\/(.*\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$"
 )
 CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 
@@ -20,7 +20,7 @@ CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 def home():
     return "✅ Droxion API is live."
 
-# ✅ Code Generator Endpoint
+# ✅ Code Generation Endpoint
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.json
@@ -40,7 +40,7 @@ def generate_code():
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You're a senior software engineer. Return clean, working code with step-by-step explanation. Use Markdown triple-backtick for code."
+                        "content": "You're a senior software engineer. Return clean, working code with clear step-by-step explanation. Output code in Markdown triple-backtick format."
                     },
                     {"role": "user", "content": prompt}
                 ]
@@ -53,7 +53,7 @@ def generate_code():
         print("❌ Code Generation Error:", e)
         return jsonify({"error": "Failed to generate code."}), 500
 
-# ✅ AI Chat Endpoint
+# ✅ Chat Endpoint (still working)
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -83,10 +83,9 @@ def chat():
         print("❌ Chat Error:", e)
         return jsonify({"error": "Failed to process chat."}), 500
 
-# ✅ CORS Test
 @app.route("/test")
 def test():
-    return jsonify({"message": "CORS is working!"})
+    return jsonify({"message": "Backend CORS working!"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
