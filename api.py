@@ -5,14 +5,14 @@ import os
 import requests
 import re
 
-# Load environment variables (for local dev)
+# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Allow all *.vercel.app subdomains + droxion.com
+# ✅ Allow droxion.com, www.droxion.com, all vercel.app subdomains
 allowed_origin_regex = re.compile(
-    r"^https:\/\/(.*\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$"
+    r"^https:\/\/(www\.)?droxion\.com$|^https:\/\/(.*\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
 )
 CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 
@@ -20,7 +20,40 @@ CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 def home():
     return "✅ Droxion API is live."
 
-# ✅ AI Chat Endpoint (GPT 3.5)
+# ✅ Code Generator Endpoint
+@app.route("/generate-code", methods=["POST"])
+def generate_code():
+    data = request.json
+    prompt = data.get("prompt", "")
+    if not prompt:
+        return jsonify({"error": "Prompt is required."}), 400
+
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "openai/gpt-4",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You're a senior software engineer. Return clean, working code with step-by-step explanation. Use Markdown triple-backtick for code."
+                    },
+                    {"role": "user", "content": prompt}
+                ]
+            }
+        )
+        result = response.json()
+        code = result["choices"][0]["message"]["content"]
+        return jsonify({"code": code})
+    except Exception as e:
+        print("❌ Code Generation Error:", e)
+        return jsonify({"error": "Failed to generate code."}), 500
+
+# ✅ AI Chat Endpoint
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -50,45 +83,7 @@ def chat():
         print("❌ Chat Error:", e)
         return jsonify({"error": "Failed to process chat."}), 500
 
-# ✅ Code Generator (GPT-4)
-@app.route("/generate-code", methods=["POST"])
-def generate_code():
-    data = request.json
-    prompt = data.get("prompt", "")
-    if not prompt:
-        return jsonify({"error": "Prompt is required."}), 400
-
-    try:
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "openai/gpt-4",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You're a senior software engineer. Return clean, working code with clear step-by-step explanation. Use Markdown triple-backticks for code."
-                    },
-                    {"role": "user", "content": prompt}
-                ]
-            }
-        )
-        result = response.json()
-        code = result["choices"][0]["message"]["content"]
-        return jsonify({"code": code})
-    except Exception as e:
-        print("❌ Code Generation Error:", e)
-        return jsonify({"error": "Failed to generate code."}), 500
-
-# ✅ Optional AI Image Route (placeholder, you can activate it later)
-@app.route("/generate-image", methods=["POST"])
-def generate_image():
-    return jsonify({"error": "Not implemented yet."})
-
-# ✅ Simple CORS test
+# ✅ CORS Test
 @app.route("/test")
 def test():
     return jsonify({"message": "CORS is working!"})
