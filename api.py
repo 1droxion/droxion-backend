@@ -10,7 +10,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ CORS configuration
+# ✅ CORS for vercel + custom domain
 allowed_origin_regex = re.compile(
     r"^https:\/\/(www\.)?droxion\.com$|"
     r"^https:\/\/droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
@@ -21,7 +21,8 @@ CORS(app, supports_credentials=True, origins=allowed_origin_regex)
 def home():
     return "✅ Droxion API is live."
 
-# ✅ AI Chat Endpoint
+
+# ✅ Chat endpoint
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -30,7 +31,6 @@ def chat():
         return jsonify({"error": "Message is required."}), 400
 
     try:
-        # Identity override
         if re.search(r"who (made|created) you|your creator", message, re.IGNORECASE):
             return jsonify({"reply": "I was created by Dhruv Patel and powered by Droxion™. Owned by Dhruv Patel."})
 
@@ -55,7 +55,8 @@ def chat():
         print("❌ Chat Error:", e)
         return jsonify({"error": "Failed to process chat."}), 500
 
-# ✅ Code Generation Endpoint
+
+# ✅ Code Generator
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.json
@@ -88,7 +89,8 @@ def generate_code():
         print("❌ Code Generation Error:", e)
         return jsonify({"error": "Failed to generate code."}), 500
 
-# ✅ Image Generation (Advanced Replicate)
+
+# ✅ AI Image Generator
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -116,7 +118,7 @@ def generate_image():
                 "Content-Type": "application/json"
             },
             json={
-                "version": "db21e45e...",  # Replace with your Replicate model version
+                "version": "db21e45e1af1e3e40e8b3b304fd4600b6d2f8f840f7cf4cf13b6883b3f0e96e6",
                 "input": {
                     "prompt": final_prompt,
                     "width": 1024,
@@ -126,16 +128,17 @@ def generate_image():
             }
         )
         result = response.json()
-        image_url = result["prediction"]["output"][0]
-        return jsonify({"url": image_url})
+        return jsonify({"url": result["output"][0]})
 
     except Exception as e:
         print("❌ AI Image Error:", e)
         return jsonify({"error": "Image generation failed."}), 500
 
+
 @app.route("/test")
 def test():
     return jsonify({"message": "✅ CORS is working."})
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
