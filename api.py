@@ -10,9 +10,9 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Updated: match any droxion*.vercel.app + droxion.com
+# ✅ CORS: allow *.vercel.app and droxion.com
 allowed_origin_regex = re.compile(
-    r"^https:\/\/([a-zA-Z0-9\-]+\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$|^https:\/\/droxion\.com$"
+    r"^https:\/\/(.+\.)?droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$|^https:\/\/(www\.)?droxion\.com$|^https:\/\/droxion\.com$"
 )
 CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 
@@ -20,6 +20,7 @@ CORS(app, origins=allowed_origin_regex, supports_credentials=True)
 def home():
     return "✅ Droxion API is live."
 
+# ✅ Code Generator
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.json
@@ -39,7 +40,7 @@ def generate_code():
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You're a senior software engineer. Return clean, working code with clear step-by-step explanation. Output code in Markdown triple-backtick format."
+                        "content": "You're a senior software engineer. Return clean, working code with step-by-step explanation. Use triple backtick Markdown format."
                     },
                     {"role": "user", "content": prompt}
                 ]
@@ -52,6 +53,7 @@ def generate_code():
         print("❌ Code Generation Error:", e)
         return jsonify({"error": "Failed to generate code."}), 500
 
+# ✅ AI Chat
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -81,9 +83,39 @@ def chat():
         print("❌ Chat Error:", e)
         return jsonify({"error": "Failed to process chat."}), 500
 
+# ✅ AI Image Generator
+@app.route("/generate-image", methods=["POST"])
+def generate_image():
+    data = request.json
+    prompt = data.get("prompt", "")
+    if not prompt:
+        return jsonify({"error": "Prompt is required."}), 400
+
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={
+                "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "dall-e-3",
+                "prompt": prompt,
+                "n": 1,
+                "size": "1024x1024"
+            }
+        )
+        result = response.json()
+        image_url = result["data"][0]["url"]
+        return jsonify({"image_url": image_url})
+    except Exception as e:
+        print("❌ Image Generation Error:", e)
+        return jsonify({"error": "Failed to generate image."}), 500
+
+# ✅ Test route
 @app.route("/test")
 def test():
-    return jsonify({"message": "CORS is working!"})
+    return jsonify({"message": "✅ Backend CORS OK, routes ready!"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
