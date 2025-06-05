@@ -5,12 +5,11 @@ import os
 import requests
 import re
 
-# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ CORS for vercel + custom domain
+# ✅ Allow Droxion domains
 allowed_origin_regex = re.compile(
     r"^https:\/\/(www\.)?droxion\.com$|"
     r"^https:\/\/droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
@@ -20,7 +19,6 @@ CORS(app, supports_credentials=True, origins=allowed_origin_regex)
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
-
 
 # ✅ Chat endpoint
 @app.route("/chat", methods=["POST"])
@@ -48,15 +46,13 @@ def chat():
                 ]
             }
         )
-        result = response.json()
-        reply = result["choices"][0]["message"]["content"]
+        reply = response.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
         print("❌ Chat Error:", e)
         return jsonify({"error": "Failed to process chat."}), 500
 
-
-# ✅ Code Generator
+# ✅ Code generation endpoint
 @app.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.json
@@ -76,21 +72,19 @@ def generate_code():
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You're a senior software engineer. Return clean, working code with step-by-step explanation. Output code in Markdown triple-backtick format."
+                        "content": "You're a senior software engineer. Return clean, working code with explanation. Format code using triple backticks."
                     },
                     {"role": "user", "content": prompt}
                 ]
             }
         )
-        result = response.json()
-        code = result["choices"][0]["message"]["content"]
+        code = response.json()["choices"][0]["message"]["content"]
         return jsonify({"code": code})
     except Exception as e:
         print("❌ Code Generation Error:", e)
         return jsonify({"error": "Failed to generate code."}), 500
 
-
-# ✅ AI Image Generator
+# ✅ AI image generation endpoint
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -118,7 +112,7 @@ def generate_image():
                 "Content-Type": "application/json"
             },
             json={
-                "version": "db21e45e1af1e3e40e8b3b304fd4600b6d2f8f840f7cf4cf13b6883b3f0e96e6",
+                "version": "db21e45e...",  # ✅ Replace with your exact model version ID
                 "input": {
                     "prompt": final_prompt,
                     "width": 1024,
@@ -128,17 +122,15 @@ def generate_image():
             }
         )
         result = response.json()
-        return jsonify({"url": result["output"][0]})
-
+        image_url = result["prediction"]["output"][0]
+        return jsonify({"url": image_url})
     except Exception as e:
-        print("❌ AI Image Error:", e)
+        print("❌ Image Generation Error:", e)
         return jsonify({"error": "Image generation failed."}), 500
-
 
 @app.route("/test")
 def test():
-    return jsonify({"message": "✅ CORS is working."})
-
+    return jsonify({"message": "✅ CORS is working!"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
