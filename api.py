@@ -114,7 +114,7 @@ def generate_image():
         print("❌ Image Generation Error:", e)
         return jsonify({"error": "Failed to generate image."}), 500
 
-# ✅ Generator Script
+# ✅ Generator Script (used on /generator)
 @app.route("/generate", methods=["POST"])
 def generate():
     data = request.json
