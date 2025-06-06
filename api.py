@@ -1,4 +1,4 @@
-this is my best file chat working ok i need fix just image ok here but please dont change anyhtink on my chat ok from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -46,9 +46,16 @@ def generate_image():
                 }
             }
         )
+
         result = response.json()
-        image_url = result["output"][0]
-        return jsonify({"url": image_url})
+
+        # ✅ Fix: prevent crash if no output
+        if "output" in result and isinstance(result["output"], list) and result["output"]:
+            image_url = result["output"][0]
+            return jsonify({"url": image_url})
+        else:
+            print("❌ No valid output from Replicate:", result)
+            return jsonify({"error": "No image returned from Replicate.", "details": result}), 500
 
     except Exception as e:
         print("❌ Image Generation Error:", e)
