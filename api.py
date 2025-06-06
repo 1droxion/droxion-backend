@@ -54,4 +54,4 @@ def generate_image():
         return jsonify({"error": "Image generation failed."}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000) this is my best file ok i told u my chat work good i need fix just image 
+    app.run(host="0.0.0.0", port=5000)  
