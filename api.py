@@ -1,4 +1,4 @@
-ok here but please dont change anyhtink on my chat ok from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
