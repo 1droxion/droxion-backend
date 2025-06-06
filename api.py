@@ -1,3 +1,4 @@
+ok here but please dont change anyhtink on my chat ok from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -54,4 +55,4 @@ def generate_image():
         return jsonify({"error": "Image generation failed."}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)  
+    app.run(host="0.0.0.0", port=5000)
