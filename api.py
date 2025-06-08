@@ -1,102 +1,166 @@
-import React, { useState, useEffect } from "react";
-import axios from "axios";
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from dotenv import load_dotenv
+import os
+import requests
+import re
+import sys
+import logging
 
-function AIImage() {
-  const [prompt, setPrompt] = useState("");
-  const [imageUrl, setImageUrl] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [credits, setCredits] = useState(0);
-  const [imageLimitReached, setImageLimitReached] = useState(false);
+# ✅ Log to stdout for Render
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
-  useEffect(() => {
-    axios
-      .get(`${import.meta.env.VITE_BACKEND_URL || "https://droxion-backend.onrender.com"}/user-stats`)
-      .then((res) => {
-        const stats = res.data;
-        setCredits(stats.credits);
-        if (stats.imagesThisMonth >= stats.plan.imageLimit) {
-          setImageLimitReached(true);
+# Load environment variables
+load_dotenv()
+
+app = Flask(__name__)
+
+# ✅ Allow only Droxion domains
+allowed_origin_regex = re.compile(
+    r"^https:\/\/(www\.)?droxion\.com$|"
+    r"^https:\/\/droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
+)
+CORS(app, supports_credentials=True, origins=allowed_origin_regex)
+
+# ✅ Public folder
+PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
+if not os.path.exists(PUBLIC_FOLDER):
+    os.makedirs(PUBLIC_FOLDER)
+
+# ✅ Home route
+@app.route("/")
+def home():
+    return "✅ Droxion API is live."
+
+# ✅ User stats route
+@app.route("/user-stats", methods=["GET"])
+def user_stats():
+    try:
+        plan = {
+            "name": "Starter",
+            "videoLimit": 5,
+            "imageLimit": 20,
+            "autoLimit": 10
         }
-      })
-      .catch((err) => {
-        console.warn("⚠️ Could not fetch image stats.", err);
-      });
-  }, []);
 
-  const generateImage = async () => {
-    if (imageLimitReached) {
-      alert("🚫 You've reached your image generation limit. Please upgrade your plan.");
-      return;
-    }
+        videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
+        images = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".png") and "styled" in f]
+        auto_generates = 6
 
-    if (!prompt.trim()) {
-      alert("⚠️ Please enter a prompt.");
-      return;
-    }
+        stats = {
+            "credits": 18,
+            "videosThisMonth": len(videos),
+            "imagesThisMonth": len(images),
+            "autoGenerates": auto_generates,
+            "plan": plan
+        }
 
-    setLoading(true);
-    setImageUrl("");
+        return jsonify(stats)
+    except Exception as e:
+        print("❌ Stats Error:", e)
+        return jsonify({"error": "Could not fetch stats"}), 500
 
-    try {
-      const response = await axios.post(
-        `${import.meta.env.VITE_BACKEND_URL || "https://droxion-backend.onrender.com"}/generate-image`,
-        { prompt }
-      );
+# ✅ AI Image Generation
+@app.route("/generate-image", methods=["POST"])
+def generate_image():
+    try:
+        data = request.json
+        prompt = data.get("prompt", "").strip()
+        if not prompt:
+            print("⚠️ Missing prompt")
+            return jsonify({"error": "Prompt is required."}), 400
 
-      const url = response.data.url;
-      if (url) {
-        setImageUrl(url);
-      } else {
-        alert("⚠️ Failed to get image URL.");
-      }
-    } catch (err) {
-      console.error("❌ Error:", err.response?.data || err.message);
-      alert("Image generation failed.");
-    } finally {
-      setLoading(false);
-    }
-  };
+        print("🖼️ Prompt received:", prompt)
 
-  return (
-    <div className="min-h-screen px-6 py-10 bg-gradient-to-br from-black via-[#0f0f23] to-black text-white flex flex-col items-center justify-center">
-      <div className="flex justify-between w-full max-w-5xl mb-6">
-        <h1 className="text-4xl md:text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-500 animate-pulse">
-          
-        </h1>
-        <div className="bg-black px-3 py-1 rounded text-green-400 font-semibold text-sm border border-green-600 self-start">
-           {credits}
-        </div>
-      </div>
+        headers = {
+            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+            "Content-Type": "application/json"
+        }
 
-      <input
-        type="text"
-        value={prompt}
-        onChange={(e) => setPrompt(e.target.value)}
-        placeholder="✨ Describe your dream scene..."
-        className="w-full max-w-xl p-4 mb-6 rounded-lg text-black shadow-inner border-2 border-blue-500 focus:outline-none focus:ring-4 focus:ring-purple-600 transition-all"
-      />
+        payload = {
+            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+            "input": {
+                "prompt": prompt,
+                "width": 1024,
+                "height": 1024,
+                "num_inference_steps": 30,
+                "refine": "expert_ensemble_refiner",
+                "apply_watermark": False
+            }
+        }
 
-      <button
-        onClick={generateImage}
-        disabled={loading || imageLimitReached}
-        className={`px-8 py-3 font-bold text-lg rounded-xl transition-all bg-gradient-to-r from-green-400 via-cyan-400 to-blue-500 hover:from-pink-500 hover:to-yellow-500 ${
-          loading || imageLimitReached ? "opacity-50 cursor-not-allowed" : ""
-        }`}
-      >
-        {imageLimitReached ? "🚫 Limit Reached" : loading ? "🌌 Generating..." : "⚡ Generate Image"}
-      </button>
+        response = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
+        result = response.json()
 
-      {imageUrl && (
-        <div className="mt-10 w-full flex justify-center">
-          <iframe
-            src={imageUrl}
-            title="Generated AI Image"
-            className="rounded-xl border-4 border-purple-500 shadow-2xl w-full max-w-3xl h-[600px]"
-          />
-        </div>
-      )}
-    </div>
-  );
-}
+        print("📦 Replicate status:", response.status_code)
+        print("📤 Raw Response:", result)
 
-export default AIImage;
+        if response.status_code != 201:
+            return jsonify({"error": "Replicate API failed", "details": result}), 500
+
+        preview_url = result.get("urls", {}).get("web")
+        if not preview_url:
+            return jsonify({"error": "Image URL not returned"}), 500
+
+        return jsonify({"url": preview_url})
+
+    except Exception as e:
+        print("❌ Image Generation Error:", str(e))
+        return jsonify({"error": f"Exception: {str(e)}"}), 500
+
+# ✅ AI Chat via OpenRouter
+@app.route("/chat", methods=["POST", "OPTIONS"])
+def chat():
+    if request.method == "OPTIONS":
+        return '', 200
+
+    try:
+        data = request.json
+        prompt = data.get("prompt", "").strip()
+        print("📩 Prompt received:", prompt)
+
+        if not prompt:
+            return jsonify({"error": "Prompt is required."}), 400
+
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            return jsonify({"error": "API key missing"}), 500
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": "openai/gpt-3.5-turbo",
+            "messages": [
+                {"role": "system", "content": "You are an assistant powered by Droxion."},
+                {"role": "user", "content": prompt}
+            ]
+        }
+
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=payload
+        )
+
+        result = response.json()
+        print("✅ Chat result:", result)
+
+        if response.status_code != 200:
+            return jsonify({"reply": f"❌ OpenRouter Error: {result.get('message', 'Unknown error')}"}), 400
+
+        if "choices" in result and result["choices"]:
+            reply = result["choices"][0]["message"]["content"]
+            return jsonify({"reply": reply})
+        else:
+            return jsonify({"reply": "⚠️ No reply from model."})
+
+    except Exception as e:
+        print("❌ Chat Exception:", e)
+        return jsonify({"reply": f"Error: {str(e)}"}), 500
+
+# ✅ Run the app
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
