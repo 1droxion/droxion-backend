@@ -5,20 +5,20 @@ import os
 import requests
 import re
 
-# Load .env variables
+# Load environment variables
 load_dotenv()
 
-# Flask app
+# Initialize app
 app = Flask(__name__)
 
-# CORS settings for frontend
+# Allow frontend
 allowed_origin_regex = re.compile(
     r"^https:\/\/(www\.)?droxion\.com$|"
     r"^https:\/\/droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
 )
 CORS(app, supports_credentials=True, origins=allowed_origin_regex)
 
-# Ensure /public exists
+# Public folder for user stats
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 if not os.path.exists(PUBLIC_FOLDER):
     os.makedirs(PUBLIC_FOLDER)
@@ -55,7 +55,7 @@ def user_stats():
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
 
-# ✅ AI IMAGE (Replicate SDXL)
+# ✅ AI IMAGE GENERATOR (Replicate SDXL) with debug logs
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -86,11 +86,12 @@ def generate_image():
         )
 
         print("📦 Replicate status:", response.status_code)
+        print("📤 Raw Response:", response.text)
+
         result = response.json()
-        print("✅ Replicate result:", result)
 
         if response.status_code != 200:
-            return jsonify({"error": result.get("error", "Failed to generate image")}), 500
+            return jsonify({"error": result}), 500
 
         image_url = result.get("output", [None])[0]
         if not image_url:
@@ -126,7 +127,7 @@ def chat():
         }
 
         payload = {
-            "model": "openai/gpt-3.5-turbo",  # ✅ Valid model
+            "model": "openai/gpt-3.5-turbo",
             "messages": [
                 {"role": "system", "content": "You are an assistant powered by Droxion."},
                 {"role": "user", "content": prompt}
