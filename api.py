@@ -6,6 +6,7 @@ import requests
 import re
 import sys
 import logging
+import time
 
 # ✅ Log to stdout for Render
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -27,12 +28,10 @@ PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 if not os.path.exists(PUBLIC_FOLDER):
     os.makedirs(PUBLIC_FOLDER)
 
-# ✅ Home route
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
 
-# ✅ User stats route
 @app.route("/user-stats", methods=["GET"])
 def user_stats():
     try:
@@ -60,14 +59,13 @@ def user_stats():
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
 
-# ✅ AI Image Generation
+# ✅ AI Image Generation (Fixed)
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
         data = request.json
         prompt = data.get("prompt", "").strip()
         if not prompt:
-            print("⚠️ Missing prompt")
             return jsonify({"error": "Prompt is required."}), 400
 
         print("🖼️ Prompt received:", prompt)
@@ -89,23 +87,30 @@ def generate_image():
             }
         }
 
-        response = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
-        result = response.json()
+        create = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
+        if create.status_code != 201:
+            return jsonify({"error": "Failed to create prediction", "details": create.json()}), 500
 
-        print("📦 Replicate status:", response.status_code)
-        print("📤 Raw Response:", result)
+        prediction = create.json()
+        get_url = prediction.get("urls", {}).get("get")
 
-        if response.status_code != 201:
-            return jsonify({"error": "Replicate API failed", "details": result}), 500
+        # Polling until prediction is complete
+        while True:
+            poll = requests.get(get_url, headers=headers)
+            poll_result = poll.json()
+            status = poll_result.get("status")
 
-        preview_url = result.get("urls", {}).get("web")
-        if not preview_url:
-            return jsonify({"error": "Image URL not returned"}), 500
+            if status == "succeeded":
+                image_url = poll_result.get("output")
+                return jsonify({"image_url": image_url})
 
-        return jsonify({"url": preview_url})
+            if status == "failed":
+                return jsonify({"error": "Prediction failed"}), 500
+
+            time.sleep(1)
 
     except Exception as e:
-        print("❌ Image Generation Error:", str(e))
+        print("❌ Image Generation Error:", e)
         return jsonify({"error": f"Exception: {str(e)}"}), 500
 
 # ✅ AI Chat via OpenRouter
