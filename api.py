@@ -61,7 +61,7 @@ function AIImage() {
     <div className="min-h-screen px-6 py-10 bg-gradient-to-br from-black via-[#0f0f23] to-black text-white flex flex-col items-center justify-center">
       <div className="flex justify-between w-full max-w-5xl mb-6">
         <h1 className="text-4xl md:text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-500 animate-pulse">
-          🪄 Create Stunning AI Images
+          
         </h1>
         <div className="bg-black px-3 py-1 rounded text-green-400 font-semibold text-sm border border-green-600 self-start">
           💰 {credits}
