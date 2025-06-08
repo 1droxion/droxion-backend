@@ -7,31 +7,32 @@ import re
 import sys
 import logging
 
-# ✅ Ensure logs show in Render
+# ✅ Log to stdout for Render
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
-# Load .env
+# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 
-# ✅ Allow only frontend domains
+# ✅ Allow only Droxion domains
 allowed_origin_regex = re.compile(
     r"^https:\/\/(www\.)?droxion\.com$|"
     r"^https:\/\/droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
 )
 CORS(app, supports_credentials=True, origins=allowed_origin_regex)
 
-# ✅ Public folder for stats
+# ✅ Public folder
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 if not os.path.exists(PUBLIC_FOLDER):
     os.makedirs(PUBLIC_FOLDER)
 
+# ✅ Home route
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
 
-# ✅ USER STATS
+# ✅ User stats route
 @app.route("/user-stats", methods=["GET"])
 def user_stats():
     try:
@@ -59,7 +60,7 @@ def user_stats():
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
 
-# ✅ AI IMAGE with full debug logs
+# ✅ AI Image Generation
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -77,7 +78,7 @@ def generate_image():
         }
 
         payload = {
-            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",  # SDXL v1.0
             "input": {
                 "prompt": prompt,
                 "width": 1024,
@@ -89,26 +90,26 @@ def generate_image():
         }
 
         response = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
-
-        print("📦 Replicate status:", response.status_code)
-        print("📤 Raw Response:", response.text)
-
         result = response.json()
 
-        if response.status_code != 200:
-            return jsonify({"error": result}), 500
+        print("📦 Replicate status:", response.status_code)
+        print("📤 Raw Response:", result)
 
-        image_url = result.get("output", [None])[0]
-        if not image_url:
-            return jsonify({"error": "Image generation failed."}), 500
+        if response.status_code != 201:
+            return jsonify({"error": "Replicate API failed", "details": result}), 500
 
-        return jsonify({"url": image_url})
+        # ✅ Get preview URL
+        preview_url = result.get("urls", {}).get("web")
+        if not preview_url:
+            return jsonify({"error": "Image URL not returned"}), 500
+
+        return jsonify({"url": preview_url})
 
     except Exception as e:
         print("❌ Image Generation Error:", str(e))
         return jsonify({"error": f"Exception: {str(e)}"}), 500
 
-# ✅ AI CHAT (OpenRouter)
+# ✅ AI Chat via OpenRouter
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
     if request.method == "OPTIONS":
@@ -145,7 +146,6 @@ def chat():
             json=payload
         )
 
-        print("📦 Chat status:", response.status_code)
         result = response.json()
         print("✅ Chat result:", result)
 
@@ -162,6 +162,6 @@ def chat():
         print("❌ Chat Exception:", e)
         return jsonify({"reply": f"Error: {str(e)}"}), 500
 
-# ✅ Start server
+# ✅ Run the app
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
