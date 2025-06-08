@@ -64,7 +64,7 @@ function AIImage() {
           
         </h1>
         <div className="bg-black px-3 py-1 rounded text-green-400 font-semibold text-sm border border-green-600 self-start">
-          💰 {credits}
+           {credits}
         </div>
       </div>
 
