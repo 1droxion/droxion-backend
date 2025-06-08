@@ -1,156 +1,102 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from dotenv import load_dotenv
-import os
-import requests
-import re
-import sys
-import logging
-import time
+import React, { useState, useEffect } from "react";
+import axios from "axios";
 
-# ✅ Log to stdout for Render
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-load_dotenv()
+function AIImage() {
+  const [prompt, setPrompt] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [credits, setCredits] = useState(0);
+  const [imageLimitReached, setImageLimitReached] = useState(false);
 
-app = Flask(__name__)
-
-# ✅ Allow Droxion frontend domains
-allowed_origin_regex = re.compile(
-    r"^https:\/\/(www\.)?droxion\.com$|"
-    r"^https:\/\/droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
-)
-CORS(app, supports_credentials=True, origins=allowed_origin_regex)
-
-PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
-os.makedirs(PUBLIC_FOLDER, exist_ok=True)
-
-@app.route("/")
-def home():
-    return "✅ Droxion API is live."
-
-@app.route("/user-stats", methods=["GET"])
-def user_stats():
-    try:
-        plan = {
-            "name": "Starter",
-            "videoLimit": 5,
-            "imageLimit": 20,
-            "autoLimit": 10
+  useEffect(() => {
+    axios
+      .get(`${import.meta.env.VITE_BACKEND_URL || "https://droxion-backend.onrender.com"}/user-stats`)
+      .then((res) => {
+        const stats = res.data;
+        setCredits(stats.credits);
+        if (stats.imagesThisMonth >= stats.plan.imageLimit) {
+          setImageLimitReached(true);
         }
-        videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
-        images = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".png") and "styled" in f]
-        stats = {
-            "credits": 18,
-            "videosThisMonth": len(videos),
-            "imagesThisMonth": len(images),
-            "autoGenerates": 6,
-            "plan": plan
-        }
-        return jsonify(stats)
-    except Exception as e:
-        print("❌ Stats Error:", e)
-        return jsonify({"error": "Could not fetch stats"}), 500
+      })
+      .catch((err) => {
+        console.warn("⚠️ Could not fetch image stats.", err);
+      });
+  }, []);
 
-# ✅ FIXED: Generate Image (poll until ready)
-@app.route("/generate-image", methods=["POST"])
-def generate_image():
-    try:
-        data = request.json
-        prompt = data.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"error": "Prompt is required."}), 400
+  const generateImage = async () => {
+    if (imageLimitReached) {
+      alert("🚫 You've reached your image generation limit. Please upgrade your plan.");
+      return;
+    }
 
-        print("🖼️ Prompt received:", prompt)
+    if (!prompt.trim()) {
+      alert("⚠️ Please enter a prompt.");
+      return;
+    }
 
-        headers = {
-            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
-            "Content-Type": "application/json"
-        }
+    setLoading(true);
+    setImageUrl("");
 
-        payload = {
-            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",  # SDXL
-            "input": {
-                "prompt": prompt,
-                "width": 1024,
-                "height": 1024,
-                "num_inference_steps": 30,
-                "refine": "expert_ensemble_refiner",
-                "apply_watermark": False
-            }
-        }
+    try {
+      const response = await axios.post(
+        `${import.meta.env.VITE_BACKEND_URL || "https://droxion-backend.onrender.com"}/generate-image`,
+        { prompt }
+      );
 
-        # 1. Create prediction
-        response = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
-        prediction = response.json()
+      const url = response.data.url;
+      if (url) {
+        setImageUrl(url);
+      } else {
+        alert("⚠️ Failed to get image URL.");
+      }
+    } catch (err) {
+      console.error("❌ Error:", err.response?.data || err.message);
+      alert("Image generation failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        if response.status_code != 201:
-            print("❌ Create Error:", prediction)
-            return jsonify({"error": "Failed to create prediction", "details": prediction}), 500
+  return (
+    <div className="min-h-screen px-6 py-10 bg-gradient-to-br from-black via-[#0f0f23] to-black text-white flex flex-col items-center justify-center">
+      <div className="flex justify-between w-full max-w-5xl mb-6">
+        <h1 className="text-4xl md:text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-500 animate-pulse">
+          🪄 Create Stunning AI Images
+        </h1>
+        <div className="bg-black px-3 py-1 rounded text-green-400 font-semibold text-sm border border-green-600 self-start">
+          💰 {credits}
+        </div>
+      </div>
 
-        prediction_url = prediction.get("urls", {}).get("get")
-        if not prediction_url:
-            return jsonify({"error": "No polling URL returned"}), 500
+      <input
+        type="text"
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+        placeholder="✨ Describe your dream scene..."
+        className="w-full max-w-xl p-4 mb-6 rounded-lg text-black shadow-inner border-2 border-blue-500 focus:outline-none focus:ring-4 focus:ring-purple-600 transition-all"
+      />
 
-        # 2. Poll until output is ready
-        for _ in range(30):
-            poll = requests.get(prediction_url, headers=headers)
-            poll_data = poll.json()
-            status = poll_data.get("status")
+      <button
+        onClick={generateImage}
+        disabled={loading || imageLimitReached}
+        className={`px-8 py-3 font-bold text-lg rounded-xl transition-all bg-gradient-to-r from-green-400 via-cyan-400 to-blue-500 hover:from-pink-500 hover:to-yellow-500 ${
+          loading || imageLimitReached ? "opacity-50 cursor-not-allowed" : ""
+        }`}
+      >
+        {imageLimitReached ? "🚫 Limit Reached" : loading ? "🌌 Generating..." : "⚡ Generate Image"}
+      </button>
 
-            if status == "succeeded":
-                output = poll_data.get("output")
-                if output and isinstance(output, list):
-                    return jsonify({"url": output[0]})
-                break
-            elif status == "failed":
-                return jsonify({"error": "Image generation failed."}), 500
+      {imageUrl && (
+        <div className="mt-10 w-full flex justify-center">
+          <iframe
+            src={imageUrl}
+            title="Generated AI Image"
+            className="rounded-xl border-4 border-purple-500 shadow-2xl w-full max-w-3xl h-[600px]"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
-            time.sleep(1)
-
-        return jsonify({"error": "Timeout waiting for image."}), 504
-
-    except Exception as e:
-        print("❌ Generation Error:", str(e))
-        return jsonify({"error": f"Exception: {str(e)}"}), 500
-
-@app.route("/chat", methods=["POST", "OPTIONS"])
-def chat():
-    if request.method == "OPTIONS":
-        return '', 200
-
-    try:
-        data = request.json
-        prompt = data.get("prompt", "").strip()
-        print("📩 Chat prompt:", prompt)
-
-        if not prompt:
-            return jsonify({"error": "Prompt is required."}), 400
-
-        headers = {
-            "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "model": "openai/gpt-3.5-turbo",
-            "messages": [
-                {"role": "system", "content": "You are an assistant powered by Droxion."},
-                {"role": "user", "content": prompt}
-            ]
-        }
-
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
-        result = response.json()
-
-        if response.status_code != 200:
-            return jsonify({"reply": f"❌ OpenRouter Error: {result.get('message', 'Unknown error')}"}), 400
-
-        reply = result["choices"][0]["message"]["content"]
-        return jsonify({"reply": reply})
-
-    except Exception as e:
-        print("❌ Chat Error:", e)
-        return jsonify({"reply": f"Error: {str(e)}"}), 500
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+export default AIImage;
