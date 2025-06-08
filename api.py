@@ -8,17 +8,17 @@ import re
 # Load environment variables
 load_dotenv()
 
-# Create Flask app
+# Flask app
 app = Flask(__name__)
 
-# Allow Droxion frontends
+# Allow frontend origins
 allowed_origin_regex = re.compile(
     r"^https:\/\/(www\.)?droxion\.com$|"
     r"^https:\/\/droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
 )
 CORS(app, supports_credentials=True, origins=allowed_origin_regex)
 
-# Public folder path for counting images/videos
+# Ensure public folder exists
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 if not os.path.exists(PUBLIC_FOLDER):
     os.makedirs(PUBLIC_FOLDER)
@@ -27,7 +27,7 @@ if not os.path.exists(PUBLIC_FOLDER):
 def home():
     return "✅ Droxion API is live."
 
-# ✅ USER STATS ROUTE (removes 404 in frontend)
+# ✅ USER STATS ROUTE
 @app.route("/user-stats", methods=["GET"])
 def user_stats():
     try:
@@ -40,7 +40,7 @@ def user_stats():
 
         videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
         images = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".png") and "styled" in f]
-        auto_generates = 6  # You can update with real tracking later
+        auto_generates = 6
 
         stats = {
             "credits": 18,
@@ -55,7 +55,7 @@ def user_stats():
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
 
-# ✅ IMAGE GENERATOR (Replicate SDXL)
+# ✅ IMAGE GENERATION (Replicate SDXL)
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -73,7 +73,7 @@ def generate_image():
                 "Content-Type": "application/json"
             },
             json={
-                "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",  # Stable SDXL
+                "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
                 "input": {
                     "prompt": prompt,
                     "width": 1024,
@@ -97,7 +97,7 @@ def generate_image():
         print("❌ Image Generation Error:", e)
         return jsonify({"error": "Image generation failed."}), 500
 
-# ✅ CHAT ROUTE (OpenRouter with full debug)
+# ✅ CHAT ROUTE (OpenRouter with fixed model)
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
     if request.method == "OPTIONS":
@@ -121,7 +121,7 @@ def chat():
         }
 
         payload = {
-            "model": "openrouter/openchat",  # or gpt-3.5 etc
+            "model": "openai/gpt-3.5-turbo",  # ✅ Fixed model name
             "messages": [
                 {"role": "system", "content": "You are an assistant powered by Droxion."},
                 {"role": "user", "content": prompt}
@@ -139,7 +139,7 @@ def chat():
         print("✅ Result:", result)
 
         if response.status_code != 200:
-            return jsonify({"reply": f"❌ OpenRouter Error: {result.get('error', 'Unknown error')}"})
+            return jsonify({"reply": f"❌ OpenRouter Error: {result.get('message', 'Unknown error')}"}), 400
 
         if "choices" in result and result["choices"]:
             reply = result["choices"][0]["message"]["content"]
@@ -151,6 +151,6 @@ def chat():
         print("❌ Chat Exception:", e)
         return jsonify({"reply": f"Error: {str(e)}"}), 500
 
-# ✅ Run app
+# Run server
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
