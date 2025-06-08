@@ -4,21 +4,25 @@ from dotenv import load_dotenv
 import os
 import requests
 import re
+import sys
+import logging
 
-# Load environment variables
+# ✅ Ensure logs show in Render
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+
+# Load .env
 load_dotenv()
 
-# Initialize app
 app = Flask(__name__)
 
-# Allow frontend
+# ✅ Allow only frontend domains
 allowed_origin_regex = re.compile(
     r"^https:\/\/(www\.)?droxion\.com$|"
     r"^https:\/\/droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
 )
 CORS(app, supports_credentials=True, origins=allowed_origin_regex)
 
-# Public folder for user stats
+# ✅ Public folder for stats
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 if not os.path.exists(PUBLIC_FOLDER):
     os.makedirs(PUBLIC_FOLDER)
@@ -55,35 +59,36 @@ def user_stats():
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
 
-# ✅ AI IMAGE GENERATOR (Replicate SDXL) with debug logs
+# ✅ AI IMAGE with full debug logs
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
-    data = request.json
-    prompt = data.get("prompt", "").strip()
-    if not prompt:
-        return jsonify({"error": "Prompt is required."}), 400
-
     try:
-        print("🖼️ Image prompt:", prompt)
+        data = request.json
+        prompt = data.get("prompt", "").strip()
+        if not prompt:
+            print("⚠️ Missing prompt")
+            return jsonify({"error": "Prompt is required."}), 400
 
-        response = requests.post(
-            "https://api.replicate.com/v1/predictions",
-            headers={
-                "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
-                "input": {
-                    "prompt": prompt,
-                    "width": 1024,
-                    "height": 1024,
-                    "num_inference_steps": 30,
-                    "refine": "expert_ensemble_refiner",
-                    "apply_watermark": False
-                }
+        print("🖼️ Prompt received:", prompt)
+
+        headers = {
+            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+            "input": {
+                "prompt": prompt,
+                "width": 1024,
+                "height": 1024,
+                "num_inference_steps": 30,
+                "refine": "expert_ensemble_refiner",
+                "apply_watermark": False
             }
-        )
+        }
+
+        response = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
 
         print("📦 Replicate status:", response.status_code)
         print("📤 Raw Response:", response.text)
@@ -100,10 +105,10 @@ def generate_image():
         return jsonify({"url": image_url})
 
     except Exception as e:
-        print("❌ Image Generation Error:", e)
-        return jsonify({"error": f"Image generation failed: {str(e)}"}), 500
+        print("❌ Image Generation Error:", str(e))
+        return jsonify({"error": f"Exception: {str(e)}"}), 500
 
-# ✅ AI CHAT (OpenRouter GPT-3.5)
+# ✅ AI CHAT (OpenRouter)
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
     if request.method == "OPTIONS":
@@ -157,6 +162,6 @@ def chat():
         print("❌ Chat Exception:", e)
         return jsonify({"reply": f"Error: {str(e)}"}), 500
 
-# ✅ Start app
+# ✅ Start server
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
