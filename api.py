@@ -5,24 +5,57 @@ import os
 import requests
 import re
 
-# Load .env environment variables
+# Load environment variables
 load_dotenv()
 
 # Create Flask app
 app = Flask(__name__)
 
-# ✅ Allow CORS from all known Droxion frontends
+# Allow Droxion frontends
 allowed_origin_regex = re.compile(
     r"^https:\/\/(www\.)?droxion\.com$|"
     r"^https:\/\/droxion(-live-final)?(-[a-z0-9]+)?\.vercel\.app$"
 )
 CORS(app, supports_credentials=True, origins=allowed_origin_regex)
 
+# Public folder path for counting images/videos
+PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
+if not os.path.exists(PUBLIC_FOLDER):
+    os.makedirs(PUBLIC_FOLDER)
+
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
 
-# ✅ AI IMAGE GENERATOR (Replicate)
+# ✅ USER STATS ROUTE (removes 404 in frontend)
+@app.route("/user-stats", methods=["GET"])
+def user_stats():
+    try:
+        plan = {
+            "name": "Starter",
+            "videoLimit": 5,
+            "imageLimit": 20,
+            "autoLimit": 10
+        }
+
+        videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
+        images = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".png") and "styled" in f]
+        auto_generates = 6  # You can update with real tracking later
+
+        stats = {
+            "credits": 18,
+            "videosThisMonth": len(videos),
+            "imagesThisMonth": len(images),
+            "autoGenerates": auto_generates,
+            "plan": plan
+        }
+
+        return jsonify(stats)
+    except Exception as e:
+        print("❌ Stats Error:", e)
+        return jsonify({"error": "Could not fetch stats"}), 500
+
+# ✅ IMAGE GENERATOR (Replicate SDXL)
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -64,7 +97,7 @@ def generate_image():
         print("❌ Image Generation Error:", e)
         return jsonify({"error": "Image generation failed."}), 500
 
-# ✅ AI CHAT (OpenRouter)
+# ✅ CHAT ROUTE (OpenRouter with full debug)
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
     if request.method == "OPTIONS":
@@ -72,15 +105,15 @@ def chat():
 
     try:
         data = request.json
-        print("📩 Incoming chat data:", data)
-
         prompt = data.get("prompt", "").strip()
+        print("📩 Prompt received:", prompt)
+
         if not prompt:
             return jsonify({"error": "Prompt is required."}), 400
 
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
-            return jsonify({"error": "OpenRouter API key missing."}), 500
+            return jsonify({"error": "API key missing"}), 500
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -88,7 +121,7 @@ def chat():
         }
 
         payload = {
-            "model": "openrouter/openchat",
+            "model": "openrouter/openchat",  # or gpt-3.5 etc
             "messages": [
                 {"role": "system", "content": "You are an assistant powered by Droxion."},
                 {"role": "user", "content": prompt}
@@ -101,16 +134,23 @@ def chat():
             json=payload
         )
 
-        print("🤖 OpenRouter status:", response.status_code)
+        print("📦 Status:", response.status_code)
         result = response.json()
-        print("✅ OpenRouter result:", result)
+        print("✅ Result:", result)
 
-        reply = result["choices"][0]["message"]["content"] if "choices" in result else "⚠️ No reply."
-        return jsonify({"reply": reply})
+        if response.status_code != 200:
+            return jsonify({"reply": f"❌ OpenRouter Error: {result.get('error', 'Unknown error')}"})
+
+        if "choices" in result and result["choices"]:
+            reply = result["choices"][0]["message"]["content"]
+            return jsonify({"reply": reply})
+        else:
+            return jsonify({"reply": "⚠️ No reply from model."})
 
     except Exception as e:
-        print("❌ Chat Error:", e)
-        return jsonify({"error": "Chat generation failed."}), 500
+        print("❌ Chat Exception:", e)
+        return jsonify({"reply": f"Error: {str(e)}"}), 500
 
+# ✅ Run app
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
