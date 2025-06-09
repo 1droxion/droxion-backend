@@ -8,6 +8,7 @@ import sys
 import logging
 import time
 import datetime
+import ast
 
 # ✅ Log to stdout for Render
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -167,7 +168,7 @@ def chat():
         print("❌ Chat Exception:", e)
         return jsonify({"reply": f"Error: {str(e)}"}), 500
 
-# ✅ Analytics Route
+# ✅ Analytics Tracking
 analytics_log = os.path.join(os.getcwd(), "analytics.log")
 
 @app.route("/track", methods=["POST"])
@@ -180,6 +181,27 @@ def track_event():
         return jsonify({"status": "ok"})
     except Exception as e:
         print("❌ Track error:", e)
+        return jsonify({"error": str(e)}), 500
+
+# ✅ Analytics Viewer
+@app.route("/analytics", methods=["GET"])
+def get_analytics():
+    try:
+        if not os.path.exists("analytics.log"):
+            return jsonify([])
+
+        logs = []
+        with open("analytics.log", "r") as f:
+            for line in f:
+                try:
+                    entry = ast.literal_eval(line.strip())
+                    logs.append(entry)
+                except:
+                    pass
+
+        return jsonify(logs)
+    except Exception as e:
+        print("❌ Read analytics error:", e)
         return jsonify({"error": str(e)}), 500
 
 # ✅ Run the app
