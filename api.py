@@ -204,6 +204,16 @@ def get_analytics():
         print("❌ Read analytics error:", e)
         return jsonify({"error": str(e)}), 500
 
+# ✅ NEW: AI World Story Feed
+@app.route("/get-story-feed", methods=["GET"])
+def get_story_feed():
+    try:
+        with open("engine/story_feed.txt", "r") as f:
+            content = f.read()
+        return jsonify({"story": content})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # ✅ Run the app
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
