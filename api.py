@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -7,6 +7,7 @@ import re
 import sys
 import logging
 import time
+import datetime
 
 # ✅ Log to stdout for Render
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -59,7 +60,7 @@ def user_stats():
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
 
-# ✅ AI Image Generation (Fixed)
+# ✅ AI Image Generation
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -165,6 +166,21 @@ def chat():
     except Exception as e:
         print("❌ Chat Exception:", e)
         return jsonify({"reply": f"Error: {str(e)}"}), 500
+
+# ✅ Analytics Route
+analytics_log = os.path.join(os.getcwd(), "analytics.log")
+
+@app.route("/track", methods=["POST"])
+def track_event():
+    try:
+        data = request.json
+        data["timestamp"] = str(datetime.datetime.utcnow())
+        with open(analytics_log, "a") as f:
+            f.write(str(data) + "\n")
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        print("❌ Track error:", e)
+        return jsonify({"error": str(e)}), 500
 
 # ✅ Run the app
 if __name__ == "__main__":
