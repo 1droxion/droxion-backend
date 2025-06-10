@@ -9,6 +9,7 @@ import logging
 import time
 import datetime
 import ast
+import json
 
 # ✅ Log to stdout for Render
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -61,7 +62,6 @@ def user_stats():
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
 
-# ✅ AI Image Generation
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -96,7 +96,6 @@ def generate_image():
         prediction = create.json()
         get_url = prediction.get("urls", {}).get("get")
 
-        # Polling until prediction is complete
         while True:
             poll = requests.get(get_url, headers=headers)
             poll_result = poll.json()
@@ -115,7 +114,6 @@ def generate_image():
         print("❌ Image Generation Error:", e)
         return jsonify({"error": f"Exception: {str(e)}"}), 500
 
-# ✅ AI Chat via OpenRouter
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
     if request.method == "OPTIONS":
@@ -168,22 +166,18 @@ def chat():
         print("❌ Chat Exception:", e)
         return jsonify({"reply": f"Error: {str(e)}"}), 500
 
-# ✅ Analytics Tracking
-analytics_log = os.path.join(os.getcwd(), "analytics.log")
-
 @app.route("/track", methods=["POST"])
 def track_event():
     try:
         data = request.json
         data["timestamp"] = str(datetime.datetime.utcnow())
-        with open(analytics_log, "a") as f:
+        with open("analytics.log", "a") as f:
             f.write(str(data) + "\n")
         return jsonify({"status": "ok"})
     except Exception as e:
         print("❌ Track error:", e)
         return jsonify({"error": str(e)}), 500
 
-# ✅ Analytics Viewer
 @app.route("/analytics", methods=["GET"])
 def get_analytics():
     try:
@@ -204,7 +198,6 @@ def get_analytics():
         print("❌ Read analytics error:", e)
         return jsonify({"error": str(e)}), 500
 
-# ✅ NEW: AI World Story Feed
 @app.route("/get-story-feed", methods=["GET"])
 def get_story_feed():
     try:
@@ -214,6 +207,14 @@ def get_story_feed():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ✅ Run the app
+# ✅ Auto-run the world simulation with the Flask app
+from threading import Thread
+def evolve_world():
+    import engine.live_engine
+    engine.live_engine.run()
+
+Thread(target=evolve_world, daemon=True).start()
+
+# ✅ Start Flask server
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
