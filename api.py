@@ -9,7 +9,8 @@ import logging
 import time
 import datetime
 import ast
-import json
+import threading  # ✅ for auto-run
+from engine.live_engine import run_forever  # ✅ import your story engine
 
 # ✅ Log to stdout for Render
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -44,11 +45,9 @@ def user_stats():
             "imageLimit": 20,
             "autoLimit": 10
         }
-
         videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
         images = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".png") and "styled" in f]
         auto_generates = 6
-
         stats = {
             "credits": 18,
             "videosThisMonth": len(videos),
@@ -56,7 +55,6 @@ def user_stats():
             "autoGenerates": auto_generates,
             "plan": plan
         }
-
         return jsonify(stats)
     except Exception as e:
         print("❌ Stats Error:", e)
@@ -69,14 +67,11 @@ def generate_image():
         prompt = data.get("prompt", "").strip()
         if not prompt:
             return jsonify({"error": "Prompt is required."}), 400
-
         print("🖼️ Prompt received:", prompt)
-
         headers = {
             "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
             "Content-Type": "application/json"
         }
-
         payload = {
             "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
             "input": {
@@ -88,28 +83,21 @@ def generate_image():
                 "apply_watermark": False
             }
         }
-
         create = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
         if create.status_code != 201:
             return jsonify({"error": "Failed to create prediction", "details": create.json()}), 500
-
         prediction = create.json()
         get_url = prediction.get("urls", {}).get("get")
-
         while True:
             poll = requests.get(get_url, headers=headers)
             poll_result = poll.json()
             status = poll_result.get("status")
-
             if status == "succeeded":
                 image_url = poll_result.get("output")
                 return jsonify({"image_url": image_url})
-
             if status == "failed":
                 return jsonify({"error": "Prediction failed"}), 500
-
             time.sleep(1)
-
     except Exception as e:
         print("❌ Image Generation Error:", e)
         return jsonify({"error": f"Exception: {str(e)}"}), 500
@@ -118,24 +106,19 @@ def generate_image():
 def chat():
     if request.method == "OPTIONS":
         return '', 200
-
     try:
         data = request.json
         prompt = data.get("prompt", "").strip()
         print("📩 Prompt received:", prompt)
-
         if not prompt:
             return jsonify({"error": "Prompt is required."}), 400
-
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             return jsonify({"error": "API key missing"}), 500
-
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
-
         payload = {
             "model": "openai/gpt-3.5-turbo",
             "messages": [
@@ -143,35 +126,28 @@ def chat():
                 {"role": "user", "content": prompt}
             ]
         }
-
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=payload
-        )
-
+        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
         result = response.json()
         print("✅ Chat result:", result)
-
         if response.status_code != 200:
             return jsonify({"reply": f"❌ OpenRouter Error: {result.get('message', 'Unknown error')}"}), 400
-
         if "choices" in result and result["choices"]:
             reply = result["choices"][0]["message"]["content"]
             return jsonify({"reply": reply})
         else:
             return jsonify({"reply": "⚠️ No reply from model."})
-
     except Exception as e:
         print("❌ Chat Exception:", e)
         return jsonify({"reply": f"Error: {str(e)}"}), 500
+
+analytics_log = os.path.join(os.getcwd(), "analytics.log")
 
 @app.route("/track", methods=["POST"])
 def track_event():
     try:
         data = request.json
         data["timestamp"] = str(datetime.datetime.utcnow())
-        with open("analytics.log", "a") as f:
+        with open(analytics_log, "a") as f:
             f.write(str(data) + "\n")
         return jsonify({"status": "ok"})
     except Exception as e:
@@ -183,7 +159,6 @@ def get_analytics():
     try:
         if not os.path.exists("analytics.log"):
             return jsonify([])
-
         logs = []
         with open("analytics.log", "r") as f:
             for line in f:
@@ -192,7 +167,6 @@ def get_analytics():
                     logs.append(entry)
                 except:
                     pass
-
         return jsonify(logs)
     except Exception as e:
         print("❌ Read analytics error:", e)
@@ -207,14 +181,8 @@ def get_story_feed():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ✅ Auto-run the world simulation with the Flask app
-from threading import Thread
-def evolve_world():
-    import engine.live_engine
-    engine.live_engine.run()
+# ✅ Start evolving world in background
+threading.Thread(target=run_forever, daemon=True).start()
 
-Thread(target=evolve_world, daemon=True).start()
-
-# ✅ Start Flask server
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
