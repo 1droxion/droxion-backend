@@ -1,42 +1,44 @@
-import random
+import openai
 import time
-import json
-from datetime import datetime
+import os
 
-# Simple simulation of 100 AI humans
-humans = []
+# ✅ Load your OpenAI API key from environment
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-cities = ["New York", "Delhi", "London", "Tokyo", "Paris", "Cairo", "Beijing"]
-emotions = ["Happy", "Sad", "Neutral", "Angry", "Excited"]
-jobs = ["Engineer", "Student", "Farmer", "Artist", "Doctor", "Unemployed"]
-names = ["Aarav", "Liam", "Sofia", "Ravi", "Emma", "Mohammed", "Aiko", "Lucas"]
+# ✅ Path to the story file
+STORY_FILE = "engine/story_feed.txt"
 
-for _ in range(100):
-    humans.append({
-        "name": random.choice(names),
-        "age": random.randint(1, 80),
-        "emotion": random.choice(emotions),
-        "job": random.choice(jobs),
-        "money": random.randint(10, 10000),
-        "city": random.choice(cities),
-        "last_updated": datetime.utcnow().isoformat()
-    })
+# ✅ Get the last few days from the story file
+def get_last_days(n=3):
+    if not os.path.exists(STORY_FILE):
+        return []
+    with open(STORY_FILE, "r", encoding="utf-8") as f:
+        lines = [line.strip() for line in f if line.strip()]
+    return lines[-n:]
 
-# Auto evolve logic
-def evolve():
-    for person in humans:
-        if random.random() < 0.2:
-            person["emotion"] = random.choice(emotions)
-        if random.random() < 0.1:
-            person["money"] += random.randint(-50, 200)
-        person["last_updated"] = datetime.utcnow().isoformat()
+# ✅ Append a new day to the story
+def write_day(entry):
+    with open(STORY_FILE, "a", encoding="utf-8") as f:
+        f.write(entry + "\n")
 
-def run():
+# ✅ Generate the next day using GPT
+def generate_next_day():
+    history = get_last_days()
+    prompt = "This is an AI-generated real-time evolving world. Here are the last few days of its history:\n\n"
+    prompt += "\n".join(history)
+    prompt += "\n\nWhat happens on the next day in 1 line? Reply in this format: [Day N]: 🌍 Text here"
+
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    next_line = response['choices'][0]['message']['content'].strip()
+    return next_line
+
+# ✅ Loop forever and evolve the world
+def run_forever():
     while True:
-        evolve()
-        with open("src/engine/story_feed.txt", "w") as f:
-            json.dump(humans, f)
-        time.sleep(5)
-
-if __name__ == "__main__":
-    run()
+        next_day = generate_next_day()
+        print("🪐 Next:", next_day)
+        write_day(next_day)
+        time.sleep(60)  # 60 seconds = 1 real-time day
