@@ -8,9 +8,8 @@ import sys
 import logging
 import time
 import datetime
-import ast
-import threading
 import json
+import subprocess
 
 # ✅ Load environment variables
 load_dotenv()
@@ -38,6 +37,7 @@ os.makedirs(PUBLIC_FOLDER, exist_ok=True)
 def home():
     return "✅ Droxion API is live."
 
+
 # ✅ Generate AI Image
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
@@ -46,8 +46,6 @@ def generate_image():
         prompt = data.get("prompt", "").strip()
         if not prompt:
             return jsonify({"error": "Prompt is required."}), 400
-
-        print("🖼️ Prompt received:", prompt)
 
         headers = {
             "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
@@ -83,8 +81,8 @@ def generate_image():
             time.sleep(1)
 
     except Exception as e:
-        print("❌ Image Generation Error:", e)
         return jsonify({"error": f"Exception: {str(e)}"}), 500
+
 
 # ✅ AI Chat route using OpenRouter
 @app.route("/chat", methods=["POST", "OPTIONS"])
@@ -95,7 +93,6 @@ def chat():
     try:
         data = request.json
         prompt = data.get("prompt", "").strip()
-        print("📩 Prompt received:", prompt)
         if not prompt:
             return jsonify({"error": "Prompt is required."}), 400
 
@@ -125,8 +122,53 @@ def chat():
         return jsonify({"reply": reply})
 
     except Exception as e:
-        print("❌ Chat Error:", e)
         return jsonify({"reply": f"Error: {str(e)}"}), 500
+
+
+# ✅ Reel Generator API
+@app.route("/generate", methods=["POST"])
+def generate_reel():
+    try:
+        config = request.get_json()
+
+        # Map dropdown values to config values
+        config_mapped = {
+            "topic": config.get("topic", ""),
+            "language": config.get("language", "English"),
+            "voice": config.get("voice", "onyx"),
+            "voiceSpeed": config.get("voiceSpeed", 1.0),
+            "clipCount": int(config.get("clipCount", 10)),
+            "fontSize": 80,
+            "subtitleColor": "white",
+            "subtitlePosition": config.get("subtitlePosition", "bottom").lower(),
+            "musicVolume": config.get("musicVolume", "medium"),
+            "tone": config.get("style", "cinematic").lower(),
+            "lengthSec": 25 if config.get("length") == "Short" else 35 if config.get("length") == "Medium" else 45,
+            "filenameMode": "auto",
+            "customFilename": "",
+            "manualScript": "yes" if config.get("mode") == "Manual" else "no",
+            "userScript": config.get("userScript", ""),
+            "captionStyle": "sentence" if config.get("captions") == "Sentence" else "word" if config.get("captions") == "Word-by-Word" else "none",
+            "branding": config.get("branding", "no").lower()
+        }
+
+        with open("config.json", "w") as f:
+            json.dump(config_mapped, f)
+
+        # Run the generator
+        result = subprocess.run(["python", "auto_reel_final.py"], capture_output=True, text=True)
+        print("▶️ Script Output:", result.stdout)
+        print("❗ Script Error:", result.stderr)
+
+        # Find the latest mp4
+        videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
+        latest_video = max(videos, key=lambda x: os.path.getctime(os.path.join(PUBLIC_FOLDER, x)))
+        return jsonify({"videoUrl": f"/{latest_video}"})
+
+    except Exception as e:
+        print("❌ Generate Error:", e)
+        return jsonify({"error": str(e)}), 500
+
 
 # ✅ Run
 if __name__ == "__main__":
