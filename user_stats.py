@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 
 app = Flask(__name__)
 
@@ -18,23 +18,17 @@ if not os.path.exists(USER_DB):
             }
         }, f)
 
-# Get user data (with free VIP for "dhruv")
-def get_user(user_id="demo_user"):
-    if user_id == "dhruv":
-        return {
-            "coins": 999,
-            "plan": "Pro"
-        }
-    with open(USER_DB, "r") as f:
-        users = json.load(f)
-    return users.get(user_id, {"coins": 0, "plan": "None"})
+# Always return "dhruv" as free Pro user
+def get_user():
+    return {
+        "coins": 999,
+        "plan": "Pro"
+    }
 
-# ✅ Route to get full stats for a user
 @app.route("/user-stats", methods=["GET"])
 def user_stats():
     try:
-        user_id = request.args.get("user_id", "demo_user")
-        user = get_user(user_id)
+        user = get_user()
 
         plan = {
             "name": user.get("plan", "Starter"),
@@ -45,7 +39,7 @@ def user_stats():
 
         videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
         images = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".png") and "styled" in f]
-        auto_generates = 6  # Optional: replace with real logic
+        auto_generates = 6  # optional logic
 
         stats = {
             "coins": user.get("coins", 0),
