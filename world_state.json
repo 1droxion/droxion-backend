@@ -1,14 +1,37 @@
 {
-  "year": 2041,
-  "population": 8172340000,
-  "cities": [
-    { "name": "NeoTokyo", "population": 20000000, "weather": "Rain", "economy": 81.3 },
-    { "name": "Solaris", "population": 12000000, "weather": "Sunny", "economy": 66.1 },
-    { "name": "Atlantica", "population": 8500000, "weather": "Storm", "economy": 54.7 }
+  "day": 1,
+  "humans": [
+    {
+      "name": "Aarav",
+      "age": 22,
+      "job": "Engineer",
+      "money": 1200,
+      "location": "India",
+      "emotion": "Excited"
+    },
+    {
+      "name": "Liya",
+      "age": 19,
+      "job": "Student",
+      "money": 100,
+      "location": "Canada",
+      "emotion": "Curious"
+    },
+    {
+      "name": "Ethan",
+      "age": 35,
+      "job": "Politician",
+      "money": 5000,
+      "location": "USA",
+      "emotion": "Ambitious"
+    }
   ],
-  "news": [
-    "⚡ Fusion energy breakthrough in Solaris",
-    "🤖 NeoTokyo announces new AI citizen program",
-    "🌊 Rising sea levels near Atlantica prompt migration policy"
-  ]
+  "weather": "Sunny",
+  "economy": {
+    "globalGDP": 10000000,
+    "marketTrend": "Bullish"
+  },
+  "politics": {
+    "majorEvent": "Climate summit ongoing"
+  }
 }
