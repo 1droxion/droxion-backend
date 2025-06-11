@@ -1,44 +1,50 @@
-import openai
-import time
+import json
 import os
+import random
+import time
 
-# ✅ Load your OpenAI API key from environment
-openai.api_key = os.getenv("OPENAI_API_KEY")
+WORLD_FILE = os.path.join(os.getcwd(), "world_state.json")
 
-# ✅ Path to the story file
-STORY_FILE = "engine/story_feed.txt"
+emotions = ["Happy", "Sad", "Excited", "Angry", "Bored", "Curious", "Ambitious", "Tired"]
+jobs = ["Engineer", "Artist", "Student", "Teacher", "Doctor", "Politician", "Developer", "Farmer"]
+locations = ["USA", "India", "Germany", "Japan", "Brazil", "Canada", "France", "Australia"]
 
-# ✅ Get the last few days from the story file
-def get_last_days(n=3):
-    if not os.path.exists(STORY_FILE):
-        return []
-    with open(STORY_FILE, "r", encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    return lines[-n:]
+def update_world():
+    if not os.path.exists(WORLD_FILE):
+        return
 
-# ✅ Append a new day to the story
-def write_day(entry):
-    with open(STORY_FILE, "a", encoding="utf-8") as f:
-        f.write(entry + "\n")
+    with open(WORLD_FILE, "r") as f:
+        data = json.load(f)
 
-# ✅ Generate the next day using GPT
-def generate_next_day():
-    history = get_last_days()
-    prompt = "This is an AI-generated real-time evolving world. Here are the last few days of its history:\n\n"
-    prompt += "\n".join(history)
-    prompt += "\n\nWhat happens on the next day in 1 line? Reply in this format: [Day N]: 🌍 Text here"
+    data["day"] += 1
 
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    next_line = response['choices'][0]['message']['content'].strip()
-    return next_line
+    # Update humans
+    for human in data.get("humans", []):
+        human["age"] += 1 if random.random() < 0.1 else 0
+        human["money"] += random.randint(-100, 300)
+        human["emotion"] = random.choice(emotions)
+        if random.random() < 0.2:
+            human["job"] = random.choice(jobs)
+        if random.random() < 0.1:
+            human["location"] = random.choice(locations)
 
-# ✅ Loop forever and evolve the world
+    # Change weather, economy, politics
+    data["weather"] = random.choice(["Sunny", "Rainy", "Stormy", "Cloudy", "Snowy"])
+    data["economy"]["globalGDP"] += random.randint(-10000, 20000)
+    data["economy"]["marketTrend"] = random.choice(["Bullish", "Bearish", "Neutral"])
+    data["politics"]["majorEvent"] = random.choice([
+        "Climate summit ongoing",
+        "Tech breakthrough announced",
+        "New trade deal signed",
+        "Elections approaching",
+        "Peace talks resumed"
+    ])
+
+    with open(WORLD_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
 def run_forever():
+    print("🌍 Live Earth engine started.")
     while True:
-        next_day = generate_next_day()
-        print("🪐 Next:", next_day)
-        write_day(next_day)
-        time.sleep(60)  # 60 seconds = 1 real-time day
+        update_world()
+        time.sleep(10)  # Update every 10 seconds
