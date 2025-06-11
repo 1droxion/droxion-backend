@@ -1,0 +1,14 @@
+{
+  "year": 2041,
+  "population": 8172340000,
+  "cities": [
+    { "name": "NeoTokyo", "population": 20000000, "weather": "Rain", "economy": 81.3 },
+    { "name": "Solaris", "population": 12000000, "weather": "Sunny", "economy": 66.1 },
+    { "name": "Atlantica", "population": 8500000, "weather": "Storm", "economy": 54.7 }
+  ],
+  "news": [
+    "⚡ Fusion energy breakthrough in Solaris",
+    "🤖 NeoTokyo announces new AI citizen program",
+    "🌊 Rising sea levels near Atlantica prompt migration policy"
+  ]
+}
