@@ -1,18 +1,14 @@
 import os
 import json
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
-# Public folder for video/image stats
+# Create folders and user database
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
-if not os.path.exists(PUBLIC_FOLDER):
-    os.makedirs(PUBLIC_FOLDER)
+os.makedirs(PUBLIC_FOLDER, exist_ok=True)
 
-# Simple user database (JSON file)
 USER_DB = os.path.join(os.getcwd(), "users.json")
-
-# Ensure users.json exists
 if not os.path.exists(USER_DB):
     with open(USER_DB, "w") as f:
         json.dump({
@@ -22,17 +18,23 @@ if not os.path.exists(USER_DB):
             }
         }, f)
 
-# Function to get user info
+# Get user data (with free VIP for "dhruv")
 def get_user(user_id="demo_user"):
+    if user_id == "dhruv":
+        return {
+            "coins": 999,
+            "plan": "Pro"
+        }
     with open(USER_DB, "r") as f:
         users = json.load(f)
     return users.get(user_id, {"coins": 0, "plan": "None"})
 
-# Route to fetch user stats
+# ✅ Route to get full stats for a user
 @app.route("/user-stats", methods=["GET"])
 def user_stats():
     try:
-        user = get_user()  # Use default demo_user for now
+        user_id = request.args.get("user_id", "demo_user")
+        user = get_user(user_id)
 
         plan = {
             "name": user.get("plan", "Starter"),
@@ -58,3 +60,6 @@ def user_stats():
     except Exception as e:
         print("❌ Stats Error:", e)
         return jsonify({"error": "Could not fetch stats"}), 500
+
+if __name__ == "__main__":
+    app.run(debug=True)
