@@ -1,37 +1,87 @@
 {
-  "day": 1,
-  "humans": [
-    {
-      "name": "Aarav",
-      "age": 22,
-      "job": "Engineer",
-      "money": 1200,
-      "location": "India",
-      "emotion": "Excited"
-    },
-    {
-      "name": "Liya",
-      "age": 19,
-      "job": "Student",
-      "money": 100,
-      "location": "Canada",
-      "emotion": "Curious"
-    },
-    {
-      "name": "Ethan",
-      "age": 35,
-      "job": "Politician",
-      "money": 5000,
-      "location": "USA",
-      "emotion": "Ambitious"
-    }
-  ],
-  "weather": "Sunny",
-  "economy": {
-    "globalGDP": 10000000,
-    "marketTrend": "Bullish"
-  },
-  "politics": {
-    "majorEvent": "Climate summit ongoing"
+  "universe": {
+    "age": "13.8 billion years",
+    "events": [
+      {
+        "time": "0 seconds",
+        "event": "Big Bang",
+        "description": "The universe begins as an infinitely dense point and rapidly expands."
+      },
+      {
+        "time": "3 minutes",
+        "event": "Primordial Nucleosynthesis",
+        "description": "Formation of light elements like hydrogen, helium, and lithium."
+      },
+      {
+        "time": "380,000 years",
+        "event": "Recombination",
+        "description": "Atoms form and the universe becomes transparent to light (Cosmic Microwave Background)."
+      },
+      {
+        "time": "200 million years",
+        "event": "First Stars",
+        "description": "Population III stars form, igniting the first light in the universe."
+      },
+      {
+        "time": "1 billion years",
+        "event": "First Galaxies",
+        "description": "Galaxies begin to form and cluster into larger structures."
+      },
+      {
+        "time": "4.5 billion years ago",
+        "event": "Formation of the Solar System",
+        "description": "The Sun and surrounding planets, including Earth, form from a protoplanetary disk."
+      },
+      {
+        "time": "4 billion years ago",
+        "event": "Origin of Life on Earth",
+        "description": "Simple microbial life emerges in Earth’s oceans."
+      },
+      {
+        "time": "600 million years ago",
+        "event": "Multicellular Life",
+        "description": "Complex multicellular organisms evolve."
+      },
+      {
+        "time": "250 million years ago",
+        "event": "Dinosaurs and Mammals",
+        "description": "Dinosaurs dominate land, early mammals evolve."
+      },
+      {
+        "time": "65 million years ago",
+        "event": "Dinosaur Extinction",
+        "description": "Mass extinction event allows mammals to rise."
+      },
+      {
+        "time": "2 million years ago",
+        "event": "Early Humans",
+        "description": "Genus Homo evolves in Africa."
+      },
+      {
+        "time": "300,000 years ago",
+        "event": "Homo sapiens",
+        "description": "Modern humans appear and begin spreading globally."
+      },
+      {
+        "time": "10,000 years ago",
+        "event": "Agriculture",
+        "description": "Humans develop farming and permanent settlements."
+      },
+      {
+        "time": "200 years ago",
+        "event": "Industrial Revolution",
+        "description": "Machines transform production and society."
+      },
+      {
+        "time": "Present",
+        "event": "Artificial Intelligence",
+        "description": "Intelligent systems reshape civilizations."
+      },
+      {
+        "time": "Future",
+        "event": "Interstellar Expansion",
+        "description": "Humanity and AI explore and colonize other planets and galaxies."
+      }
+    ]
   }
 }
