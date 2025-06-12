@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -28,7 +28,7 @@ CORS(app, origins=[
 # ✅ Logging
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
-# ✅ Public folder
+# ✅ Public folder for videos
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 os.makedirs(PUBLIC_FOLDER, exist_ok=True)
 
@@ -38,7 +38,7 @@ def home():
     return "✅ Droxion API is live."
 
 
-# ✅ Generate AI Image
+# ✅ Generate AI Image using Replicate
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -84,7 +84,7 @@ def generate_image():
         return jsonify({"error": f"Exception: {str(e)}"}), 500
 
 
-# ✅ AI Chat route using OpenRouter
+# ✅ AI Chat using OpenRouter
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
     if request.method == "OPTIONS":
@@ -125,13 +125,12 @@ def chat():
         return jsonify({"reply": f"Error: {str(e)}"}), 500
 
 
-# ✅ Reel Generator API
+# ✅ Reel Generator
 @app.route("/generate", methods=["POST"])
 def generate_reel():
     try:
         config = request.get_json()
 
-        # Map dropdown values to config values
         config_mapped = {
             "topic": config.get("topic", ""),
             "language": config.get("language", "English"),
@@ -155,21 +154,45 @@ def generate_reel():
         with open("config.json", "w") as f:
             json.dump(config_mapped, f)
 
-        # Run the generator
         result = subprocess.run(["python", "auto_reel_final.py"], capture_output=True, text=True)
         print("▶️ Script Output:", result.stdout)
         print("❗ Script Error:", result.stderr)
 
-        # Find the latest mp4
         videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
         latest_video = max(videos, key=lambda x: os.path.getctime(os.path.join(PUBLIC_FOLDER, x)))
-        return jsonify({"videoUrl": f"/{latest_video}"})
+        return jsonify({"videoUrl": f"/videos/{latest_video}"})
 
     except Exception as e:
         print("❌ Generate Error:", e)
         return jsonify({"error": str(e)}), 500
 
 
-# ✅ Run
+# ✅ Serve final video file
+@app.route("/videos/<filename>")
+def serve_video(filename):
+    return send_from_directory(PUBLIC_FOLDER, filename)
+
+
+# ✅ User Stats for frontend limit control
+@app.route("/user-stats", methods=["GET"])
+def user_stats():
+    return jsonify({
+        "credits": 20,
+        "videosThisMonth": 2,
+        "plan": {
+            "videoLimit": 5
+        }
+    })
+
+
+# ✅ Track usage session
+@app.route("/track", methods=["POST"])
+def track():
+    data = request.get_json()
+    print("📊 User session tracked:", data)
+    return jsonify({"status": "tracked"})
+
+
+# ✅ Start the server
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
