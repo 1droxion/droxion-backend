@@ -8,10 +8,10 @@ import time
 import json
 import subprocess
 
-# ✅ Load environment variables
+# ✅ Load env variables
 load_dotenv()
 
-# ✅ Init Flask app
+# ✅ Init app
 app = Flask(__name__)
 CORS(app, origins=[
     "https://www.droxion.com",
@@ -20,10 +20,9 @@ CORS(app, origins=[
     "http://localhost:5173"
 ], supports_credentials=True)
 
-# ✅ Logging
 logging.basicConfig(level=logging.INFO)
 
-# ✅ Public folder for saving videos
+# ✅ Static video folder
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 os.makedirs(PUBLIC_FOLDER, exist_ok=True)
 
@@ -31,7 +30,7 @@ os.makedirs(PUBLIC_FOLDER, exist_ok=True)
 def home():
     return "✅ Droxion API is live."
 
-# ✅ AI Chat (Free Use)
+# ✅ AI Chat (OpenRouter)
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -70,7 +69,7 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Exception: {str(e)}"}), 500
 
-# ✅ Generate AI Reel
+# ✅ AI Reel Generator
 @app.route("/generate", methods=["POST"])
 def generate_reel():
     try:
@@ -108,10 +107,9 @@ def generate_reel():
         return jsonify({"videoUrl": f"/videos/{latest_video}"})
 
     except Exception as e:
-        print("❌ Generate Error:", e)
         return jsonify({"error": str(e)}), 500
 
-# ✅ Generate AI Image using Replicate
+# ✅ AI Image Generator (Replicate)
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -156,29 +154,99 @@ def generate_image():
     except Exception as e:
         return jsonify({"error": f"Exception: {str(e)}"}), 500
 
-# ✅ Serve generated videos
+# ✅ YouTube Search
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    try:
+        query = request.json.get("query", "").strip()
+        if not query:
+            return jsonify({"error": "Missing query"}), 400
+
+        yt_key = os.getenv("YOUTUBE_API_KEY")
+        if not yt_key:
+            return jsonify({"error": "Missing YouTube API key"}), 500
+
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": query,
+            "type": "video",
+            "maxResults": 1,
+            "key": yt_key
+        }
+
+        res = requests.get(url, params=params)
+        data = res.json()
+
+        if "items" not in data or not data["items"]:
+            return jsonify({"error": "No video found"}), 404
+
+        video = data["items"][0]
+        video_id = video["id"]["videoId"]
+        title = video["snippet"]["title"]
+
+        return jsonify({
+            "video": {
+                "title": title,
+                "url": f"https://www.youtube.com/watch?v={video_id}"
+            }
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"Exception: {str(e)}"}), 500
+
+# ✅ /youtube alias
+@app.route("/youtube", methods=["POST"])
+def youtube_alias():
+    return search_youtube()
+
+# ✅ Real-time News Search (GNews)
+@app.route("/news", methods=["POST"])
+def search_news():
+    try:
+        query = request.json.get("query", "").strip()
+        if not query:
+            return jsonify({"articles": []})
+
+        gnews_key = os.getenv("GNEWS_API_KEY")
+        if not gnews_key:
+            return jsonify({"articles": []})
+
+        url = f"https://gnews.io/api/v4/search?q={query}&lang=en&max=3&apikey={gnews_key}"
+        res = requests.get(url)
+        data = res.json()
+
+        articles = [
+            {"title": a["title"], "url": a["url"]}
+            for a in data.get("articles", [])[:3]
+        ]
+
+        return jsonify({"articles": articles})
+
+    except Exception as e:
+        return jsonify({"error": f"News error: {str(e)}"}), 500
+
+# ✅ Serve video file
 @app.route("/videos/<filename>")
 def serve_video(filename):
     return send_from_directory(PUBLIC_FOLDER, filename)
 
-# ✅ Basic user stats (Free mode)
+# ✅ Mock user stats
 @app.route("/user-stats", methods=["GET"])
 def user_stats():
     return jsonify({
-        "coins": 999,  # For compatibility, but not used
+        "coins": 999,
         "videosThisMonth": 0,
-        "plan": {
-            "videoLimit": 999
-        }
+        "plan": {"videoLimit": 999}
     })
 
-# ✅ Optional tracking
+# ✅ Analytics tracking
 @app.route("/track", methods=["POST"])
 def track():
     data = request.get_json()
     print("📊 Tracked session:", data)
     return jsonify({"status": "ok"})
 
-# ✅ Start server
+# ✅ Start
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
