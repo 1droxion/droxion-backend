@@ -8,10 +8,7 @@ import time
 import json
 import subprocess
 
-# ✅ Load env variables
 load_dotenv()
-
-# ✅ Init app
 app = Flask(__name__)
 CORS(app, origins=[
     "https://www.droxion.com",
@@ -19,10 +16,8 @@ CORS(app, origins=[
     "https://droxion.vercel.app",
     "http://localhost:5173"
 ], supports_credentials=True)
-
 logging.basicConfig(level=logging.INFO)
 
-# ✅ Static video folder
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
 os.makedirs(PUBLIC_FOLDER, exist_ok=True)
 
@@ -30,13 +25,11 @@ os.makedirs(PUBLIC_FOLDER, exist_ok=True)
 def home():
     return "✅ Droxion API is live."
 
-# ✅ AI Chat (OpenRouter)
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         data = request.json
         prompt = data.get("prompt", "").strip()
-
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
 
@@ -65,16 +58,13 @@ def chat():
 
         reply = result["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
-
     except Exception as e:
         return jsonify({"reply": f"❌ Exception: {str(e)}"}), 500
 
-# ✅ AI Reel Generator
 @app.route("/generate", methods=["POST"])
 def generate_reel():
     try:
         config = request.get_json()
-
         config_mapped = {
             "topic": config.get("topic", ""),
             "language": config.get("language", "English"),
@@ -105,11 +95,9 @@ def generate_reel():
         videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
         latest_video = max(videos, key=lambda x: os.path.getctime(os.path.join(PUBLIC_FOLDER, x)))
         return jsonify({"videoUrl": f"/videos/{latest_video}"})
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ✅ AI Image Generator (Replicate)
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -150,17 +138,15 @@ def generate_image():
             if status == "failed":
                 return jsonify({"error": "Prediction failed"}), 500
             time.sleep(1)
-
     except Exception as e:
         return jsonify({"error": f"Exception: {str(e)}"}), 500
 
-# ✅ YouTube Search
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     try:
-        query = request.json.get("query", "").strip()
-        if not query:
-            return jsonify({"error": "Missing query"}), 400
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Missing prompt"}), 400
 
         yt_key = os.getenv("YOUTUBE_API_KEY")
         if not yt_key:
@@ -169,7 +155,7 @@ def search_youtube():
         url = "https://www.googleapis.com/youtube/v3/search"
         params = {
             "part": "snippet",
-            "q": query,
+            "q": prompt,
             "type": "video",
             "maxResults": 1,
             "key": yt_key
@@ -186,52 +172,40 @@ def search_youtube():
         title = video["snippet"]["title"]
 
         return jsonify({
-            "video": {
-                "title": title,
-                "url": f"https://www.youtube.com/watch?v={video_id}"
-            }
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "title": title
         })
-
     except Exception as e:
         return jsonify({"error": f"Exception: {str(e)}"}), 500
 
-# ✅ /youtube alias
 @app.route("/youtube", methods=["POST"])
 def youtube_alias():
     return search_youtube()
 
-# ✅ Real-time News Search (GNews)
 @app.route("/news", methods=["POST"])
 def search_news():
     try:
-        query = request.json.get("query", "").strip()
-        if not query:
-            return jsonify({"articles": []})
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"headlines": []})
 
         gnews_key = os.getenv("GNEWS_API_KEY")
         if not gnews_key:
-            return jsonify({"articles": []})
+            return jsonify({"headlines": []})
 
-        url = f"https://gnews.io/api/v4/search?q={query}&lang=en&max=3&apikey={gnews_key}"
+        url = f"https://gnews.io/api/v4/search?q={prompt}&lang=en&max=3&apikey={gnews_key}"
         res = requests.get(url)
         data = res.json()
 
-        articles = [
-            {"title": a["title"], "url": a["url"]}
-            for a in data.get("articles", [])[:3]
-        ]
-
-        return jsonify({"articles": articles})
-
+        headlines = [a["title"] for a in data.get("articles", [])[:3]]
+        return jsonify({"headlines": headlines})
     except Exception as e:
         return jsonify({"error": f"News error: {str(e)}"}), 500
 
-# ✅ Serve video file
 @app.route("/videos/<filename>")
 def serve_video(filename):
     return send_from_directory(PUBLIC_FOLDER, filename)
 
-# ✅ Mock user stats
 @app.route("/user-stats", methods=["GET"])
 def user_stats():
     return jsonify({
@@ -240,13 +214,11 @@ def user_stats():
         "plan": {"videoLimit": 999}
     })
 
-# ✅ Analytics tracking
 @app.route("/track", methods=["POST"])
 def track():
     data = request.get_json()
     print("📊 Tracked session:", data)
     return jsonify({"status": "ok"})
 
-# ✅ Start
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
