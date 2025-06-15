@@ -87,7 +87,6 @@ def analyze_image():
         if not image:
             return jsonify({"reply": "❌ No image uploaded."}), 400
 
-        # Read and base64 encode
         image_bytes = image.read()
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
@@ -177,30 +176,14 @@ def search_news():
 @app.route("/talk-avatar", methods=["POST"])
 def talk_avatar():
     try:
-        image = request.files.get("image")
-        script = request.form.get("prompt", "")
-        if not image or not script:
-            return jsonify({"error": "Image and script required"}), 400
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
 
-        image_data = base64.b64encode(image.read()).decode("utf-8")
-        headers = {
-            "Authorization": f"Basic {os.getenv('DID_API_KEY')}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "source_url": f"data:image/jpeg;base64,{image_data}",
-            "script": {
-                "type": "text",
-                "input": script,
-                "provider": {"type": "microsoft", "voice_id": "en-US-JennyNeural"}
-            }
-        }
-
-        res = requests.post("https://api.d-id.com/talks", headers=headers, json=payload)
-        data = res.json()
-        video_url = data.get("result_url", "")
-        return jsonify({"video_url": video_url})
+        # 👇 Temporary static video URL until D-ID integration
+        return jsonify({
+            "video_url": "https://d-id-demo.s3.us-west-2.amazonaws.com/sample.mp4"
+        })
     except Exception as e:
         return jsonify({"error": f"Avatar error: {str(e)}"}), 500
 
