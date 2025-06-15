@@ -170,6 +170,10 @@ def analyze_image():
         }
         res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
         data = res.json()
+
+        if res.status_code != 200:
+            return jsonify({"reply": "⚠️ AI response error."}), 500
+
         reply = data["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
