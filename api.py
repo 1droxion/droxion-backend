@@ -163,17 +163,31 @@ def classify():
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
+
+        # 🔥 Improved instruction
+        messages = [
+            {"role": "system", "content": (
+                "Your task is to classify the user's prompt into one of four categories:\n"
+                "- image: if the prompt asks to generate, create, draw, or show an image or picture\n"
+                "- youtube: if the prompt asks to find, show, or watch a video or YouTube clip\n"
+                "- news: if the prompt asks about news, headlines, or current events\n"
+                "- chat: if it's just general conversation or doesn't fit above\n"
+                "Reply with one word only: image, youtube, news, or chat."
+            )},
+            {"role": "user", "content": prompt}
+        ]
+
         payload = {
             "model": "openai/gpt-3.5-turbo",
-            "messages": [
-                {"role": "system", "content": "Classify the user's prompt into one of: image, youtube, news, chat."},
-                {"role": "user", "content": f"Prompt: {prompt}\nOnly reply with one word: image, youtube, news, or chat."}
-            ]
+            "messages": messages
         }
+
         res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"].strip().lower()
+        print(f"🧠 Prompt: {prompt} → Type: {reply}")
         return jsonify({"type": reply})
     except Exception as e:
+        print(f"❌ Classify error: {str(e)}")
         return jsonify({"type": "chat", "error": str(e)})
 
 if __name__ == "__main__":
