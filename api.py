@@ -4,10 +4,11 @@ from dotenv import load_dotenv
 import os
 import requests
 import time
+import base64
 
 load_dotenv()
 app = Flask(__name__)
-CORS(app, origins="*", supports_credentials=True)
+CORS(app, origins=["*"], supports_credentials=True)
 
 @app.route("/")
 def home():
@@ -21,23 +22,23 @@ def chat():
             return jsonify({"reply": "❗ Prompt is required."}), 400
 
         headers = {
-            "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+            "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
             "Content-Type": "application/json"
         }
 
         payload = {
-            "model": "openai/gpt-3.5-turbo",
+            "model": "gpt-4",
             "messages": [
-                {"role": "system", "content": "You are an assistant powered by Droxion."},
+                {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™."},
                 {"role": "user", "content": prompt}
             ]
         }
 
-        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+        return jsonify({"reply": f"❌ Exception: {str(e)}"}), 500
 
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
@@ -55,8 +56,8 @@ def generate_image():
             "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
             "input": {
                 "prompt": prompt,
-                "width": 1024,
-                "height": 1024,
+                "width": 768,
+                "height": 768,
                 "num_inference_steps": 30,
                 "refine": "expert_ensemble_refiner",
                 "apply_watermark": False
@@ -68,11 +69,12 @@ def generate_image():
         get_url = prediction.get("urls", {}).get("get")
 
         while True:
-            poll = requests.get(get_url, headers=headers).json()
-            if poll.get("status") == "succeeded":
-                return jsonify({"image_url": poll.get("output")})
-            elif poll.get("status") == "failed":
-                return jsonify({"error": "Image generation failed"}), 500
+            poll = requests.get(get_url, headers=headers)
+            poll_result = poll.json()
+            if poll_result.get("status") == "succeeded":
+                return jsonify({"image_url": poll_result.get("output")})
+            elif poll_result.get("status") == "failed":
+                return jsonify({"error": "Prediction failed"}), 500
             time.sleep(1)
     except Exception as e:
         return jsonify({"error": f"Exception: {str(e)}"}), 500
@@ -85,36 +87,49 @@ def analyze_image():
         if not image:
             return jsonify({"reply": "❌ No image uploaded."}), 400
 
-        os.makedirs("temp", exist_ok=True)
-        path = os.path.join("temp", "upload.jpg")
-        image.save(path)
+        # Read and base64 encode
+        image_bytes = image.read()
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        full_prompt = f"The user uploaded an image. Prompt: '{prompt}'. Describe or respond helpfully."
         headers = {
-            "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+            "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
             "Content-Type": "application/json"
         }
 
+        messages = [
+            {"role": "system", "content": "You are an AI image analyzer assistant."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_base64}"
+                        }
+                    }
+                ]
+            }
+        ]
+
         payload = {
-            "model": "openai/gpt-3.5-turbo",
-            "messages": [
-                {"role": "system", "content": "You're an AI assistant that analyzes images and prompts together."},
-                {"role": "user", "content": full_prompt}
-            ]
+            "model": "gpt-4-vision-preview",
+            "messages": messages,
+            "max_tokens": 500
         }
 
-        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+        return jsonify({"reply": f"❌ Image error: {str(e)}"}), 500
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     try:
         prompt = request.json.get("prompt", "").strip()
         if not prompt:
-            return jsonify({"error": "Prompt required"}), 400
+            return jsonify({"error": "Missing prompt"}), 400
 
         key = os.getenv("YOUTUBE_API_KEY")
         url = "https://www.googleapis.com/youtube/v3/search"
@@ -133,9 +148,11 @@ def search_youtube():
             return jsonify({"error": "No video found"}), 404
 
         video = data["items"][0]
+        video_id = video["id"]["videoId"]
+        title = video["snippet"]["title"]
         return jsonify({
-            "url": f"https://www.youtube.com/watch?v={video['id']['videoId']}",
-            "title": video["snippet"]["title"]
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "title": title
         })
     except Exception as e:
         return jsonify({"error": f"Exception: {str(e)}"}), 500
@@ -144,6 +161,9 @@ def search_youtube():
 def search_news():
     try:
         prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"headlines": []})
+
         gnews_key = os.getenv("GNEWS_API_KEY")
         url = f"https://gnews.io/api/v4/search?q={prompt}&lang=en&max=3&apikey={gnews_key}"
 
@@ -154,41 +174,35 @@ def search_news():
     except Exception as e:
         return jsonify({"error": f"News error: {str(e)}"}), 500
 
-@app.route("/classify", methods=["POST"])
-def classify():
+@app.route("/talk-avatar", methods=["POST"])
+def talk_avatar():
     try:
-        prompt = request.json.get("prompt", "")
-        api_key = os.getenv("OPENROUTER_API_KEY")
+        image = request.files.get("image")
+        script = request.form.get("prompt", "")
+        if not image or not script:
+            return jsonify({"error": "Image and script required"}), 400
+
+        image_data = base64.b64encode(image.read()).decode("utf-8")
         headers = {
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Basic {os.getenv('DID_API_KEY')}",
             "Content-Type": "application/json"
         }
 
-        # 🔥 Improved instruction
-        messages = [
-            {"role": "system", "content": (
-                "Your task is to classify the user's prompt into one of four categories:\n"
-                "- image: if the prompt asks to generate, create, draw, or show an image or picture\n"
-                "- youtube: if the prompt asks to find, show, or watch a video or YouTube clip\n"
-                "- news: if the prompt asks about news, headlines, or current events\n"
-                "- chat: if it's just general conversation or doesn't fit above\n"
-                "Reply with one word only: image, youtube, news, or chat."
-            )},
-            {"role": "user", "content": prompt}
-        ]
-
         payload = {
-            "model": "openai/gpt-3.5-turbo",
-            "messages": messages
+            "source_url": f"data:image/jpeg;base64,{image_data}",
+            "script": {
+                "type": "text",
+                "input": script,
+                "provider": {"type": "microsoft", "voice_id": "en-US-JennyNeural"}
+            }
         }
 
-        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
-        reply = res.json()["choices"][0]["message"]["content"].strip().lower()
-        print(f"🧠 Prompt: {prompt} → Type: {reply}")
-        return jsonify({"type": reply})
+        res = requests.post("https://api.d-id.com/talks", headers=headers, json=payload)
+        data = res.json()
+        video_url = data.get("result_url", "")
+        return jsonify({"video_url": video_url})
     except Exception as e:
-        print(f"❌ Classify error: {str(e)}")
-        return jsonify({"type": "chat", "error": str(e)})
+        return jsonify({"error": f"Avatar error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
