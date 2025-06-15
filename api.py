@@ -141,6 +141,39 @@ def generate_image():
     except Exception as e:
         return jsonify({"error": f"Exception: {str(e)}"}), 500
 
+@app.route("/analyze-image", methods=["POST"])
+def analyze_image():
+    try:
+        image = request.files.get("image")
+        prompt = request.form.get("prompt", "").strip()
+
+        if not image:
+            return jsonify({"reply": "❌ No image uploaded."}), 400
+
+        os.makedirs("temp", exist_ok=True)
+        image_path = os.path.join("temp", "upload.jpg")
+        image.save(image_path)
+
+        gpt_prompt = f"The user uploaded an image. Prompt: '{prompt}'. Respond helpfully based on it."
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "openai/gpt-3.5-turbo",
+            "messages": [
+                {"role": "system", "content": "You are an AI image-aware assistant. Respond smartly to the user's image and prompt."},
+                {"role": "user", "content": gpt_prompt}
+            ]
+        }
+        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        data = res.json()
+        reply = data["choices"][0]["message"]["content"]
+        return jsonify({"reply": reply})
+    except Exception as e:
+        return jsonify({"reply": f"❌ Image error: {str(e)}"}), 500
+
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     try:
