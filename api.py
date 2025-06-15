@@ -1,178 +1,166 @@
-import React, { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import axios from "axios";
-import remarkGfm from "remark-gfm";
-import rehypeRaw from "rehype-raw";
-import { Mic, SendHorizonal, ImageIcon, Download } from "lucide-react";
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+from dotenv import load_dotenv
+import os
+import requests
+import time
+import json
 
-const API = import.meta.env.VITE_API_URL;
+load_dotenv()
+app = Flask(__name__)
+CORS(app, origins=["*"], supports_credentials=True)
 
-function AIChat() {
-  const [prompt, setPrompt] = useState("");
-  const [chat, setChat] = useState(() => JSON.parse(localStorage.getItem("chat-history")) || []);
-  const [loading, setLoading] = useState(false);
-  const [image, setImage] = useState(null);
-  const fileInputRef = useRef();
-  const scrollRef = useRef();
+@app.route("/")
+def home():
+    return "✅ Droxion API is live."
 
-  const speak = (text) => {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "en-US";
-    window.speechSynthesis.speak(utterance);
-  };
+@app.route("/chat", methods=["POST"])
+def chat():
+    try:
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"reply": "❗ Prompt is required."}), 400
 
-  const handleVoiceInput = () => {
-    const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-    recognition.lang = "en-US";
-    recognition.start();
-    recognition.onresult = (event) => {
-      const spoken = event.results[0][0].transcript;
-      setPrompt(spoken);
-    };
-  };
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
 
-  const handleSend = async () => {
-    if (!prompt.trim() && !image) return;
+        payload = {
+            "model": "openai/gpt-3.5-turbo",
+            "messages": [
+                {"role": "system", "content": "You are an assistant powered by Droxion."},
+                {"role": "user", "content": prompt}
+            ]
+        }
 
-    const userMessage = { role: "user", content: prompt };
-    if (image) {
-      userMessage.imageUrl = URL.createObjectURL(image);
-    }
+        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        result = response.json()
 
-    const updatedChat = [...chat, userMessage];
-    setChat(updatedChat);
-    setPrompt("");
-    setLoading(true);
+        reply = result["choices"][0]["message"]["content"]
+        return jsonify({"reply": reply})
+    except Exception as e:
+        return jsonify({"reply": f"❌ Exception: {str(e)}"}), 500
 
-    try {
-      let res;
-      if (image) {
-        const formData = new FormData();
-        formData.append("image", image);
-        formData.append("prompt", prompt);
-        res = await axios.post(`${API}/analyze-image`, formData);
-        setImage(null);
-      } else if (prompt.toLowerCase().startsWith("/yt")) {
-        const search = prompt.replace("/yt", "").trim();
-        res = await axios.post(`${API}/search-youtube`, { prompt: search });
-        updatedChat.push({
-          role: "assistant",
-          content: `🎬 [${res.data.title}](${res.data.url})`
-        });
-        setChat(updatedChat);
-        setLoading(false);
-        return;
-      } else if (prompt.toLowerCase().startsWith("/news")) {
-        const search = prompt.replace("/news", "").trim();
-        res = await axios.post(`${API}/news`, { prompt: search });
-        updatedChat.push({
-          role: "assistant",
-          content: res.data.headlines.map(h => `📰 ${h}`).join("\n\n")
-        });
-        setChat(updatedChat);
-        setLoading(false);
-        return;
-      } else {
-        res = await axios.post(`${API}/chat`, { prompt });
-      }
+@app.route("/generate-image", methods=["POST"])
+def generate_image():
+    try:
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Prompt is required."}), 400
 
-      updatedChat.push({ role: "assistant", content: res.data.reply || res.data.error });
-      setChat(updatedChat);
-      localStorage.setItem("chat-history", JSON.stringify(updatedChat));
-    } catch (err) {
-      updatedChat.push({ role: "assistant", content: "❌ Error: Something went wrong." });
-      setChat(updatedChat);
-    }
+        headers = {
+            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+            "Content-Type": "application/json"
+        }
 
-    setLoading(false);
-  };
+        payload = {
+            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+            "input": {
+                "prompt": prompt,
+                "width": 1024,
+                "height": 1024,
+                "num_inference_steps": 30,
+                "refine": "expert_ensemble_refiner",
+                "apply_watermark": False
+            }
+        }
 
-  const handleImageSelect = (e) => {
-    const file = e.target.files[0];
-    if (file) setImage(file);
-  };
+        create = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
+        prediction = create.json()
+        get_url = prediction.get("urls", {}).get("get")
 
-  useEffect(() => {
-    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chat]);
+        while True:
+            poll = requests.get(get_url, headers=headers)
+            poll_result = poll.json()
+            if poll_result.get("status") == "succeeded":
+                return jsonify({"image_url": poll_result.get("output")})
+            elif poll_result.get("status") == "failed":
+                return jsonify({"error": "Prediction failed"}), 500
+            time.sleep(1)
+    except Exception as e:
+        return jsonify({"error": f"Exception: {str(e)}"}), 500
 
-  const downloadChat = () => {
-    const content = chat.map(m => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
-    const blob = new Blob([content], { type: "text/plain" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "chat.txt";
-    a.click();
-  };
+@app.route("/analyze-image", methods=["POST"])
+def analyze_image():
+    try:
+        image = request.files.get("image")
+        prompt = request.form.get("prompt", "").strip()
+        if not image:
+            return jsonify({"reply": "❌ No image uploaded."}), 400
 
-  return (
-    <div className="w-full h-screen flex flex-col bg-black text-white">
-      <div className="p-3 border-b border-gray-700 flex justify-between items-center">
-        <div className="text-xl font-bold">💬 AI Chat (Droxion)</div>
-        <div className="flex gap-4 items-center">
-          <Download onClick={downloadChat} className="cursor-pointer" />
-        </div>
-      </div>
+        os.makedirs("temp", exist_ok=True)
+        path = os.path.join("temp", "upload.jpg")
+        image.save(path)
 
-      <div className="flex-1 overflow-y-auto px-4 py-2 space-y-4">
-        {chat.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`p-3 rounded-xl max-w-[75%] whitespace-pre-wrap ${msg.role === "user" ? "bg-white text-black" : "bg-zinc-800 text-white"}`}>
-              {msg.imageUrl && (
-                <img src={msg.imageUrl} alt="Uploaded" className="rounded-lg max-w-xs mb-2" />
-              )}
-              <ReactMarkdown
-                children={msg.content}
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeRaw]}
-                components={{
-                  a: ({ node, ...props }) => (
-                    <a {...props} className="text-blue-400 underline" target="_blank" rel="noopener noreferrer" />
-                  ),
-                  code: ({ node, inline, className, children, ...props }) => (
-                    <pre className="bg-gray-900 p-2 rounded text-green-300 overflow-x-auto">
-                      <code {...props}>{children}</code>
-                    </pre>
-                  )
-                }}
-              />
-            </div>
-          </div>
-        ))}
-        {loading && (
-          <div className="text-left text-sm text-gray-500 px-4">Typing...</div>
-        )}
-        <div ref={scrollRef}></div>
-      </div>
+        final_prompt = f"The user uploaded an image. Prompt: '{prompt}'. Respond helpfully."
+        headers = {
+            "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "openai/gpt-3.5-turbo",
+            "messages": [
+                {"role": "system", "content": "You're an AI assistant that can analyze user-uploaded images and help with their prompt."},
+                {"role": "user", "content": final_prompt}
+            ]
+        }
+        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        reply = res.json()["choices"][0]["message"]["content"]
+        return jsonify({"reply": reply})
+    except Exception as e:
+        return jsonify({"reply": f"❌ Image error: {str(e)}"}), 500
 
-      <div className="border-t border-gray-700 p-3 flex items-center gap-2">
-        <button onClick={handleVoiceInput}>
-          <Mic className="text-white" />
-        </button>
-        <button onClick={() => fileInputRef.current.click()}>
-          <ImageIcon className="text-white" />
-        </button>
-        <input
-          type="file"
-          ref={fileInputRef}
-          onChange={handleImageSelect}
-          accept="image/*"
-          hidden
-        />
-        <input
-          type="text"
-          placeholder="Type a message or /yt Messi"
-          className="flex-1 p-2 rounded-lg bg-zinc-800 text-white outline-none"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSend()}
-        />
-        <button onClick={handleSend}>
-          <SendHorizonal className="text-white" />
-        </button>
-      </div>
-    </div>
-  );
-}
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    try:
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Missing prompt"}), 400
 
-export default AIChat;
+        key = os.getenv("YOUTUBE_API_KEY")
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": prompt,
+            "type": "video",
+            "maxResults": 1,
+            "key": key
+        }
+
+        res = requests.get(url, params=params)
+        data = res.json()
+
+        if "items" not in data or not data["items"]:
+            return jsonify({"error": "No video found"}), 404
+
+        video = data["items"][0]
+        video_id = video["id"]["videoId"]
+        title = video["snippet"]["title"]
+        return jsonify({
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "title": title
+        })
+    except Exception as e:
+        return jsonify({"error": f"Exception: {str(e)}"}), 500
+
+@app.route("/news", methods=["POST"])
+def search_news():
+    try:
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"headlines": []})
+
+        gnews_key = os.getenv("GNEWS_API_KEY")
+        url = f"https://gnews.io/api/v4/search?q={prompt}&lang=en&max=3&apikey={gnews_key}"
+
+        res = requests.get(url)
+        articles = res.json().get("articles", [])[:3]
+        headlines = [a["title"] for a in articles]
+        return jsonify({"headlines": headlines})
+    except Exception as e:
+        return jsonify({"error": f"News error: {str(e)}"}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
