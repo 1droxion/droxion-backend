@@ -7,8 +7,6 @@ import time
 
 load_dotenv()
 app = Flask(__name__)
-
-# ✅ Allow all origins for development, update in prod as needed
 CORS(app, origins="*", supports_credentials=True)
 
 @app.route("/")
@@ -22,9 +20,8 @@ def chat():
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
 
-        api_key = os.getenv("OPENROUTER_API_KEY")
         headers = {
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
             "Content-Type": "application/json"
         }
 
@@ -36,13 +33,11 @@ def chat():
             ]
         }
 
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
-        result = response.json()
-
-        reply = result["choices"][0]["message"]["content"]
+        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"❌ Exception: {str(e)}"}), 500
+        return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
@@ -73,12 +68,11 @@ def generate_image():
         get_url = prediction.get("urls", {}).get("get")
 
         while True:
-            poll = requests.get(get_url, headers=headers)
-            poll_result = poll.json()
-            if poll_result.get("status") == "succeeded":
-                return jsonify({"image_url": poll_result.get("output")})
-            elif poll_result.get("status") == "failed":
-                return jsonify({"error": "Prediction failed"}), 500
+            poll = requests.get(get_url, headers=headers).json()
+            if poll.get("status") == "succeeded":
+                return jsonify({"image_url": poll.get("output")})
+            elif poll.get("status") == "failed":
+                return jsonify({"error": "Image generation failed"}), 500
             time.sleep(1)
     except Exception as e:
         return jsonify({"error": f"Exception: {str(e)}"}), 500
@@ -95,30 +89,32 @@ def analyze_image():
         path = os.path.join("temp", "upload.jpg")
         image.save(path)
 
-        final_prompt = f"The user uploaded an image. Prompt: '{prompt}'. Respond helpfully."
+        full_prompt = f"The user uploaded an image. Prompt: '{prompt}'. Describe or respond helpfully."
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
             "Content-Type": "application/json"
         }
+
         payload = {
             "model": "openai/gpt-3.5-turbo",
             "messages": [
-                {"role": "system", "content": "You're an AI assistant that can analyze user-uploaded images and help with their prompt."},
-                {"role": "user", "content": final_prompt}
+                {"role": "system", "content": "You're an AI assistant that analyzes images and prompts together."},
+                {"role": "user", "content": full_prompt}
             ]
         }
+
         res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"❌ Image error: {str(e)}"}), 500
+        return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     try:
         prompt = request.json.get("prompt", "").strip()
         if not prompt:
-            return jsonify({"error": "Missing prompt"}), 400
+            return jsonify({"error": "Prompt required"}), 400
 
         key = os.getenv("YOUTUBE_API_KEY")
         url = "https://www.googleapis.com/youtube/v3/search"
@@ -137,11 +133,9 @@ def search_youtube():
             return jsonify({"error": "No video found"}), 404
 
         video = data["items"][0]
-        video_id = video["id"]["videoId"]
-        title = video["snippet"]["title"]
         return jsonify({
-            "url": f"https://www.youtube.com/watch?v={video_id}",
-            "title": title
+            "url": f"https://www.youtube.com/watch?v={video['id']['videoId']}",
+            "title": video["snippet"]["title"]
         })
     except Exception as e:
         return jsonify({"error": f"Exception: {str(e)}"}), 500
@@ -150,9 +144,6 @@ def search_youtube():
 def search_news():
     try:
         prompt = request.json.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"headlines": []})
-
         gnews_key = os.getenv("GNEWS_API_KEY")
         url = f"https://gnews.io/api/v4/search?q={prompt}&lang=en&max=3&apikey={gnews_key}"
 
@@ -162,6 +153,28 @@ def search_news():
         return jsonify({"headlines": headlines})
     except Exception as e:
         return jsonify({"error": f"News error: {str(e)}"}), 500
+
+@app.route("/classify", methods=["POST"])
+def classify():
+    try:
+        prompt = request.json.get("prompt", "")
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "openai/gpt-3.5-turbo",
+            "messages": [
+                {"role": "system", "content": "Classify the user's prompt into one of: image, youtube, news, chat."},
+                {"role": "user", "content": f"Prompt: {prompt}\nOnly reply with one word: image, youtube, news, or chat."}
+            ]
+        }
+        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        reply = res.json()["choices"][0]["message"]["content"].strip().lower()
+        return jsonify({"type": reply})
+    except Exception as e:
+        return jsonify({"type": "chat", "error": str(e)})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
