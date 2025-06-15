@@ -16,6 +16,7 @@ CORS(app, origins=[
     "https://droxion.vercel.app",
     "http://localhost:5173"
 ], supports_credentials=True)
+
 logging.basicConfig(level=logging.INFO)
 
 PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
