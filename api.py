@@ -1,262 +1,178 @@
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-from dotenv import load_dotenv
-import os
-import requests
-import logging
-import time
-import json
-import subprocess
+import React, { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import axios from "axios";
+import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import { Mic, SendHorizonal, ImageIcon, Download } from "lucide-react";
 
-load_dotenv()
-app = Flask(__name__)
-CORS(app, origins=[
-    "https://www.droxion.com",
-    "https://droxion.com",
-    "https://droxion.vercel.app",
-    "http://localhost:5173"
-], supports_credentials=True)
+const API = import.meta.env.VITE_API_URL;
 
-logging.basicConfig(level=logging.INFO)
+function AIChat() {
+  const [prompt, setPrompt] = useState("");
+  const [chat, setChat] = useState(() => JSON.parse(localStorage.getItem("chat-history")) || []);
+  const [loading, setLoading] = useState(false);
+  const [image, setImage] = useState(null);
+  const fileInputRef = useRef();
+  const scrollRef = useRef();
 
-PUBLIC_FOLDER = os.path.join(os.getcwd(), "public")
-os.makedirs(PUBLIC_FOLDER, exist_ok=True)
+  const speak = (text) => {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-US";
+    window.speechSynthesis.speak(utterance);
+  };
 
-@app.route("/")
-def home():
-    return "✅ Droxion API is live."
+  const handleVoiceInput = () => {
+    const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+    recognition.lang = "en-US";
+    recognition.start();
+    recognition.onresult = (event) => {
+      const spoken = event.results[0][0].transcript;
+      setPrompt(spoken);
+    };
+  };
 
-@app.route("/chat", methods=["POST"])
-def chat():
-    try:
-        data = request.json
-        prompt = data.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"reply": "❗ Prompt is required."}), 400
+  const handleSend = async () => {
+    if (!prompt.trim() && !image) return;
 
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            return jsonify({"reply": "❌ Missing OpenRouter API key"}), 500
+    const userMessage = { role: "user", content: prompt };
+    if (image) {
+      userMessage.imageUrl = URL.createObjectURL(image);
+    }
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
+    const updatedChat = [...chat, userMessage];
+    setChat(updatedChat);
+    setPrompt("");
+    setLoading(true);
 
-        payload = {
-            "model": "openai/gpt-3.5-turbo",
-            "messages": [
-                {"role": "system", "content": "You are an assistant powered by Droxion."},
-                {"role": "user", "content": prompt}
-            ]
-        }
+    try {
+      let res;
+      if (image) {
+        const formData = new FormData();
+        formData.append("image", image);
+        formData.append("prompt", prompt);
+        res = await axios.post(`${API}/analyze-image`, formData);
+        setImage(null);
+      } else if (prompt.toLowerCase().startsWith("/yt")) {
+        const search = prompt.replace("/yt", "").trim();
+        res = await axios.post(`${API}/search-youtube`, { prompt: search });
+        updatedChat.push({
+          role: "assistant",
+          content: `🎬 [${res.data.title}](${res.data.url})`
+        });
+        setChat(updatedChat);
+        setLoading(false);
+        return;
+      } else if (prompt.toLowerCase().startsWith("/news")) {
+        const search = prompt.replace("/news", "").trim();
+        res = await axios.post(`${API}/news`, { prompt: search });
+        updatedChat.push({
+          role: "assistant",
+          content: res.data.headlines.map(h => `📰 ${h}`).join("\n\n")
+        });
+        setChat(updatedChat);
+        setLoading(false);
+        return;
+      } else {
+        res = await axios.post(`${API}/chat`, { prompt });
+      }
 
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
-        result = response.json()
+      updatedChat.push({ role: "assistant", content: res.data.reply || res.data.error });
+      setChat(updatedChat);
+      localStorage.setItem("chat-history", JSON.stringify(updatedChat));
+    } catch (err) {
+      updatedChat.push({ role: "assistant", content: "❌ Error: Something went wrong." });
+      setChat(updatedChat);
+    }
 
-        if response.status_code != 200:
-            return jsonify({"reply": f"❌ Error: {result.get('message', 'Unknown error')}"}), 400
+    setLoading(false);
+  };
 
-        reply = result["choices"][0]["message"]["content"]
-        return jsonify({"reply": reply})
-    except Exception as e:
-        return jsonify({"reply": f"❌ Exception: {str(e)}"}), 500
+  const handleImageSelect = (e) => {
+    const file = e.target.files[0];
+    if (file) setImage(file);
+  };
 
-@app.route("/generate", methods=["POST"])
-def generate_reel():
-    try:
-        config = request.get_json()
-        config_mapped = {
-            "topic": config.get("topic", ""),
-            "language": config.get("language", "English"),
-            "voice": config.get("voice", "onyx"),
-            "voiceSpeed": config.get("voiceSpeed", 1.0),
-            "clipCount": int(config.get("clipCount", 10)),
-            "fontSize": 80,
-            "subtitleColor": "white",
-            "subtitlePosition": config.get("subtitlePosition", "bottom").lower(),
-            "musicVolume": config.get("musicVolume", "medium"),
-            "tone": config.get("style", "cinematic").lower(),
-            "lengthSec": 25 if config.get("length") == "Short" else 35 if config.get("length") == "Medium" else 45,
-            "filenameMode": "auto",
-            "customFilename": "",
-            "manualScript": "yes" if config.get("mode") == "Manual" else "no",
-            "userScript": config.get("userScript", ""),
-            "captionStyle": "sentence" if config.get("captions") == "Sentence" else "word" if config.get("captions") == "Word-by-Word" else "none",
-            "branding": config.get("branding", "no").lower()
-        }
+  useEffect(() => {
+    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chat]);
 
-        with open("config.json", "w") as f:
-            json.dump(config_mapped, f)
+  const downloadChat = () => {
+    const content = chat.map(m => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n");
+    const blob = new Blob([content], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "chat.txt";
+    a.click();
+  };
 
-        result = subprocess.run(["python", "auto_reel_final.py"], capture_output=True, text=True)
-        print("▶️ Script Output:", result.stdout)
-        print("❗ Script Error:", result.stderr)
+  return (
+    <div className="w-full h-screen flex flex-col bg-black text-white">
+      <div className="p-3 border-b border-gray-700 flex justify-between items-center">
+        <div className="text-xl font-bold">💬 AI Chat (Droxion)</div>
+        <div className="flex gap-4 items-center">
+          <Download onClick={downloadChat} className="cursor-pointer" />
+        </div>
+      </div>
 
-        videos = [f for f in os.listdir(PUBLIC_FOLDER) if f.endswith(".mp4")]
-        latest_video = max(videos, key=lambda x: os.path.getctime(os.path.join(PUBLIC_FOLDER, x)))
-        return jsonify({"videoUrl": f"/videos/{latest_video}"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+      <div className="flex-1 overflow-y-auto px-4 py-2 space-y-4">
+        {chat.map((msg, i) => (
+          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className={`p-3 rounded-xl max-w-[75%] whitespace-pre-wrap ${msg.role === "user" ? "bg-white text-black" : "bg-zinc-800 text-white"}`}>
+              {msg.imageUrl && (
+                <img src={msg.imageUrl} alt="Uploaded" className="rounded-lg max-w-xs mb-2" />
+              )}
+              <ReactMarkdown
+                children={msg.content}
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeRaw]}
+                components={{
+                  a: ({ node, ...props }) => (
+                    <a {...props} className="text-blue-400 underline" target="_blank" rel="noopener noreferrer" />
+                  ),
+                  code: ({ node, inline, className, children, ...props }) => (
+                    <pre className="bg-gray-900 p-2 rounded text-green-300 overflow-x-auto">
+                      <code {...props}>{children}</code>
+                    </pre>
+                  )
+                }}
+              />
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="text-left text-sm text-gray-500 px-4">Typing...</div>
+        )}
+        <div ref={scrollRef}></div>
+      </div>
 
-@app.route("/generate-image", methods=["POST"])
-def generate_image():
-    try:
-        data = request.json
-        prompt = data.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"error": "Prompt is required."}), 400
+      <div className="border-t border-gray-700 p-3 flex items-center gap-2">
+        <button onClick={handleVoiceInput}>
+          <Mic className="text-white" />
+        </button>
+        <button onClick={() => fileInputRef.current.click()}>
+          <ImageIcon className="text-white" />
+        </button>
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleImageSelect}
+          accept="image/*"
+          hidden
+        />
+        <input
+          type="text"
+          placeholder="Type a message or /yt Messi"
+          className="flex-1 p-2 rounded-lg bg-zinc-800 text-white outline-none"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleSend()}
+        />
+        <button onClick={handleSend}>
+          <SendHorizonal className="text-white" />
+        </button>
+      </div>
+    </div>
+  );
+}
 
-        headers = {
-            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
-            "input": {
-                "prompt": prompt,
-                "width": 1024,
-                "height": 1024,
-                "num_inference_steps": 30,
-                "refine": "expert_ensemble_refiner",
-                "apply_watermark": False
-            }
-        }
-
-        create = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
-        if create.status_code != 201:
-            return jsonify({"error": "Failed to create prediction", "details": create.json()}), 500
-
-        prediction = create.json()
-        get_url = prediction.get("urls", {}).get("get")
-
-        while True:
-            poll = requests.get(get_url, headers=headers)
-            poll_result = poll.json()
-            status = poll_result.get("status")
-            if status == "succeeded":
-                return jsonify({"image_url": poll_result.get("output")})
-            if status == "failed":
-                return jsonify({"error": "Prediction failed"}), 500
-            time.sleep(1)
-    except Exception as e:
-        return jsonify({"error": f"Exception: {str(e)}"}), 500
-
-@app.route("/analyze-image", methods=["POST"])
-def analyze_image():
-    try:
-        image = request.files.get("image")
-        prompt = request.form.get("prompt", "").strip()
-
-        if not image:
-            return jsonify({"reply": "❌ No image uploaded."}), 400
-
-        os.makedirs("temp", exist_ok=True)
-        image_path = os.path.join("temp", "upload.jpg")
-        image.save(image_path)
-
-        gpt_prompt = f"The user uploaded an image. Prompt: '{prompt}'. Respond helpfully based on it."
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": "openai/gpt-3.5-turbo",
-            "messages": [
-                {"role": "system", "content": "You are an AI image-aware assistant. Respond smartly to the user's image and prompt."},
-                {"role": "user", "content": gpt_prompt}
-            ]
-        }
-        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
-        data = res.json()
-
-        if res.status_code != 200:
-            return jsonify({"reply": "⚠️ AI response error."}), 500
-
-        reply = data["choices"][0]["message"]["content"]
-        return jsonify({"reply": reply})
-    except Exception as e:
-        return jsonify({"reply": f"❌ Image error: {str(e)}"}), 500
-
-@app.route("/search-youtube", methods=["POST"])
-def search_youtube():
-    try:
-        prompt = request.json.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"error": "Missing prompt"}), 400
-
-        yt_key = os.getenv("YOUTUBE_API_KEY")
-        if not yt_key:
-            return jsonify({"error": "Missing YouTube API key"}), 500
-
-        url = "https://www.googleapis.com/youtube/v3/search"
-        params = {
-            "part": "snippet",
-            "q": prompt,
-            "type": "video",
-            "maxResults": 1,
-            "key": yt_key
-        }
-
-        res = requests.get(url, params=params)
-        data = res.json()
-
-        if "items" not in data or not data["items"]:
-            return jsonify({"error": "No video found"}), 404
-
-        video = data["items"][0]
-        video_id = video["id"]["videoId"]
-        title = video["snippet"]["title"]
-
-        return jsonify({
-            "url": f"https://www.youtube.com/watch?v={video_id}",
-            "title": title
-        })
-    except Exception as e:
-        return jsonify({"error": f"Exception: {str(e)}"}), 500
-
-@app.route("/youtube", methods=["POST"])
-def youtube_alias():
-    return search_youtube()
-
-@app.route("/news", methods=["POST"])
-def search_news():
-    try:
-        prompt = request.json.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"headlines": []})
-
-        gnews_key = os.getenv("GNEWS_API_KEY")
-        if not gnews_key:
-            return jsonify({"headlines": []})
-
-        url = f"https://gnews.io/api/v4/search?q={prompt}&lang=en&max=3&apikey={gnews_key}"
-        res = requests.get(url)
-        data = res.json()
-
-        headlines = [a["title"] for a in data.get("articles", [])[:3]]
-        return jsonify({"headlines": headlines})
-    except Exception as e:
-        return jsonify({"error": f"News error: {str(e)}"}), 500
-
-@app.route("/videos/<filename>")
-def serve_video(filename):
-    return send_from_directory(PUBLIC_FOLDER, filename)
-
-@app.route("/user-stats", methods=["GET"])
-def user_stats():
-    return jsonify({
-        "coins": 999,
-        "videosThisMonth": 0,
-        "plan": {"videoLimit": 999}
-    })
-
-@app.route("/track", methods=["POST"])
-def track():
-    data = request.get_json()
-    print("📊 Tracked session:", data)
-    return jsonify({"status": "ok"})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
+export default AIChat;
