@@ -3,8 +3,8 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 import requests
-import base64
 import time
+import base64
 
 load_dotenv()
 app = Flask(__name__)
@@ -29,7 +29,7 @@ def chat():
         payload = {
             "model": "gpt-4",
             "messages": [
-                {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™."},
+                {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion\u2122."},
                 {"role": "user", "content": prompt}
             ]
         }
@@ -38,7 +38,7 @@ def chat():
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"❌ Exception: {str(e)}"}), 500
+        return jsonify({"reply": f"\u274c Exception: {str(e)}"}), 500
 
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
@@ -85,7 +85,7 @@ def analyze_image():
         image = request.files.get("image")
         prompt = request.form.get("prompt", "").strip()
         if not image:
-            return jsonify({"reply": "❌ No image uploaded."}), 400
+            return jsonify({"reply": "\u274c No image uploaded."}), 400
 
         image_bytes = image.read()
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -101,7 +101,12 @@ def analyze_image():
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_base64}"
+                        }
+                    }
                 ]
             }
         ]
@@ -116,7 +121,7 @@ def analyze_image():
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"❌ Image error: {str(e)}"}), 500
+        return jsonify({"reply": f"\u274c Image error: {str(e)}"}), 500
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
