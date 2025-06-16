@@ -16,6 +16,7 @@ def home():
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    print("✅ Received POST /chat")  # Debug log
     try:
         prompt = request.json.get("prompt", "").strip()
         if not prompt:
@@ -29,7 +30,7 @@ def chat():
         payload = {
             "model": "gpt-4",
             "messages": [
-                {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion\u2122."},
+                {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™."},
                 {"role": "user", "content": prompt}
             ]
         }
@@ -38,7 +39,8 @@ def chat():
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"\u274c Exception: {str(e)}"}), 500
+        print("❌ Chat error:", str(e))
+        return jsonify({"reply": f"❌ Exception: {str(e)}"}), 500
 
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
@@ -77,6 +79,7 @@ def generate_image():
                 return jsonify({"error": "Prediction failed"}), 500
             time.sleep(1)
     except Exception as e:
+        print("❌ Image error:", str(e))
         return jsonify({"error": f"Exception: {str(e)}"}), 500
 
 @app.route("/analyze-image", methods=["POST"])
@@ -85,7 +88,7 @@ def analyze_image():
         image = request.files.get("image")
         prompt = request.form.get("prompt", "").strip()
         if not image:
-            return jsonify({"reply": "\u274c No image uploaded."}), 400
+            return jsonify({"reply": "❌ No image uploaded."}), 400
 
         image_bytes = image.read()
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -121,7 +124,8 @@ def analyze_image():
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"\u274c Image error: {str(e)}"}), 500
+        print("❌ Analyze image error:", str(e))
+        return jsonify({"reply": f"❌ Image error: {str(e)}"}), 500
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
@@ -154,6 +158,7 @@ def search_youtube():
             "title": title
         })
     except Exception as e:
+        print("❌ YouTube error:", str(e))
         return jsonify({"error": f"Exception: {str(e)}"}), 500
 
 @app.route("/news", methods=["POST"])
@@ -171,6 +176,7 @@ def search_news():
         headlines = [a["title"] for a in articles]
         return jsonify({"headlines": headlines})
     except Exception as e:
+        print("❌ News error:", str(e))
         return jsonify({"error": f"News error: {str(e)}"}), 500
 
 @app.route("/talk-avatar", methods=["POST"])
@@ -201,6 +207,7 @@ def talk_avatar():
         video_url = data.get("result_url", "")
         return jsonify({"video_url": video_url})
     except Exception as e:
+        print("❌ Avatar error:", str(e))
         return jsonify({"error": f"Avatar error: {str(e)}"}), 500
 
 if __name__ == "__main__":
