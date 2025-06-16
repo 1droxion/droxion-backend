@@ -77,7 +77,7 @@ function AIChat() {
       {/* Header */}
       <div className="flex items-center justify-between p-3 border-b border-gray-700">
         <div className="text-lg font-bold">
-          💬 AI Chat <span className="text-white">(Droxion)</span>
+          💬 <span className="text-white">AI Chat (Droxion)</span>
         </div>
         <div className="flex items-center gap-4 text-white text-md">
           <FaClock title="History" className="cursor-pointer" />
@@ -127,7 +127,7 @@ function AIChat() {
           />
           <button
             onClick={handleSend}
-            className="bg-white hover:bg-gray-300 text-black font-bold py-2 px-4 rounded"
+            className="bg-white hover:bg-gray-200 text-black font-bold py-2 px-4 rounded"
           >
             ➤
           </button>
