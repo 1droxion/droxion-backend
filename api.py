@@ -12,14 +12,14 @@ CORS(app, origins=["*"], supports_credentials=True)
 
 @app.route("/")
 def home():
-    return "✅ Droxion API is live."
+    return "\u2705 Droxion API is live."
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         prompt = request.json.get("prompt", "").strip()
         if not prompt:
-            return jsonify({"reply": "❗ Prompt is required."}), 400
+            return jsonify({"reply": "\u2757 Prompt is required."}), 400
 
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
@@ -29,7 +29,7 @@ def chat():
         payload = {
             "model": "gpt-4",
             "messages": [
-                {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™."},
+                {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion\u2122."},
                 {"role": "user", "content": prompt}
             ]
         }
@@ -38,7 +38,7 @@ def chat():
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"❌ Exception: {str(e)}"}), 500
+        return jsonify({"reply": f"\u274C Exception: {str(e)}"}), 500
 
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
@@ -85,7 +85,7 @@ def analyze_image():
         image = request.files.get("image")
         prompt = request.form.get("prompt", "").strip()
         if not image:
-            return jsonify({"reply": "❌ No image uploaded."}), 400
+            return jsonify({"reply": "\u274C No image uploaded."}), 400
 
         image_bytes = image.read()
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -101,12 +101,7 @@ def analyze_image():
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_base64}"
-                        }
-                    }
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
                 ]
             }
         ]
@@ -121,7 +116,7 @@ def analyze_image():
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"❌ Image error: {str(e)}"}), 500
+        return jsonify({"reply": f"\u274C Image error: {str(e)}"}), 500
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
@@ -172,20 +167,6 @@ def search_news():
         return jsonify({"headlines": headlines})
     except Exception as e:
         return jsonify({"error": f"News error: {str(e)}"}), 500
-
-@app.route("/talk-avatar", methods=["POST"])
-def talk_avatar():
-    try:
-        prompt = request.json.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"error": "Prompt is required"}), 400
-
-        # 👇 Temporary static video URL until D-ID integration
-        return jsonify({
-            "video_url": "https://d-id-demo.s3.us-west-2.amazonaws.com/sample.mp4"
-        })
-    except Exception as e:
-        return jsonify({"error": f"Avatar error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
