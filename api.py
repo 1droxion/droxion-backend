@@ -3,8 +3,8 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 import requests
-import time
 import base64
+import time
 
 load_dotenv()
 app = Flask(__name__)
@@ -12,14 +12,14 @@ CORS(app, origins=["*"], supports_credentials=True)
 
 @app.route("/")
 def home():
-    return "\u2705 Droxion API is live."
+    return "✅ Droxion API is live."
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         prompt = request.json.get("prompt", "").strip()
         if not prompt:
-            return jsonify({"reply": "\u2757 Prompt is required."}), 400
+            return jsonify({"reply": "❗ Prompt is required."}), 400
 
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
@@ -29,7 +29,7 @@ def chat():
         payload = {
             "model": "gpt-4",
             "messages": [
-                {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion\u2122."},
+                {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™."},
                 {"role": "user", "content": prompt}
             ]
         }
@@ -38,7 +38,7 @@ def chat():
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"\u274C Exception: {str(e)}"}), 500
+        return jsonify({"reply": f"❌ Exception: {str(e)}"}), 500
 
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
@@ -85,7 +85,7 @@ def analyze_image():
         image = request.files.get("image")
         prompt = request.form.get("prompt", "").strip()
         if not image:
-            return jsonify({"reply": "\u274C No image uploaded."}), 400
+            return jsonify({"reply": "❌ No image uploaded."}), 400
 
         image_bytes = image.read()
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -116,7 +116,7 @@ def analyze_image():
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"\u274C Image error: {str(e)}"}), 500
+        return jsonify({"reply": f"❌ Image error: {str(e)}"}), 500
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
@@ -167,6 +167,36 @@ def search_news():
         return jsonify({"headlines": headlines})
     except Exception as e:
         return jsonify({"error": f"News error: {str(e)}"}), 500
+
+@app.route("/talk-avatar", methods=["POST"])
+def talk_avatar():
+    try:
+        image = request.files.get("image")
+        script = request.form.get("prompt", "")
+        if not image or not script:
+            return jsonify({"error": "Image and script required"}), 400
+
+        image_data = base64.b64encode(image.read()).decode("utf-8")
+        headers = {
+            "Authorization": f"Basic {os.getenv('DID_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "source_url": f"data:image/jpeg;base64,{image_data}",
+            "script": {
+                "type": "text",
+                "input": script,
+                "provider": {"type": "microsoft", "voice_id": "en-US-JennyNeural"}
+            }
+        }
+
+        res = requests.post("https://api.d-id.com/talks", headers=headers, json=payload)
+        data = res.json()
+        video_url = data.get("result_url", "")
+        return jsonify({"video_url": video_url})
+    except Exception as e:
+        return jsonify({"error": f"Avatar error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
