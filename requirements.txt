@@ -8,3 +8,4 @@ python-dotenv
 gunicorn
 moviepy
 python-dateutil
+pytz
