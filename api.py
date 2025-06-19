@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 from dotenv import load_dotenv
 import os
 import requests
@@ -8,16 +8,17 @@ import time
 import json
 from datetime import datetime, timedelta, timezone
 from dateutil import parser
+from collections import Counter
 
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True, origins=[
+CORS(app, resources={r"/*": {"origins": [
     "https://www.droxion.com",
     "https://droxion.com",
     "https://droxion.vercel.app",
     "http://localhost:5173"
-])
+]}}, supports_credentials=True)
 
 LOG_FILE = "user_logs.json"
 
@@ -26,6 +27,7 @@ def home():
     return "✅ Droxion API is live."
 
 @app.route("/chat", methods=["POST"])
+@cross_origin()
 def chat():
     try:
         data = request.json
@@ -79,100 +81,76 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
-@app.route("/track", methods=["POST"])
-def track():
+@app.route("/generate-image", methods=["POST"])
+@cross_origin()
+def generate_image():
     try:
-        data = request.json
-        user_id = data.get("user_id")
-        action = data.get("action")
-        input_text = data.get("input")
-        timestamp = data.get("timestamp", datetime.now(timezone.utc).isoformat())
-        ip = request.remote_addr
-        location = request.headers.get("X-Location", "")  # optional, can send from frontend
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Prompt is required."}), 400
 
-        if not user_id or not action:
-            return jsonify({"error": "Missing user_id or action."}), 400
-
-        log = {
-            "user_id": user_id,
-            "action": action,
-            "input": input_text,
-            "timestamp": timestamp,
-            "ip": ip,
-            "location": location
+        headers = {
+            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+            "Content-Type": "application/json"
         }
 
-        if not os.path.exists(LOG_FILE):
-            with open(LOG_FILE, "w") as f:
-                json.dump([log], f, indent=2)
-        else:
-            with open(LOG_FILE, "r+") as f:
-                logs = json.load(f)
-                logs.append(log)
-                f.seek(0)
-                json.dump(logs, f, indent=2)
+        payload = {
+            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+            "input": {
+                "prompt": prompt,
+                "width": 768,
+                "height": 768,
+                "num_inference_steps": 30,
+                "refine": "expert_ensemble_refiner",
+                "apply_watermark": False
+            }
+        }
 
-        return jsonify({"status": "logged"})
+        create = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
+        prediction = create.json()
+        get_url = prediction.get("urls", {}).get("get")
+
+        while True:
+            poll = requests.get(get_url, headers=headers)
+            poll_result = poll.json()
+            if poll_result.get("status") == "succeeded":
+                return jsonify({"image_url": poll_result.get("output")})
+            elif poll_result.get("status") == "failed":
+                return jsonify({"error": "Prediction failed"}), 500
+            time.sleep(1)
     except Exception as e:
-        return jsonify({"error": f"Tracking error: {str(e)}"}), 500
+        return jsonify({"error": f"Image generation error: {str(e)}"}), 500
 
-@app.route("/dashboard")
-def dashboard():
-    token = request.args.get("token")
-    if token != "droxion2025":
-        return "❌ Unauthorized", 403
+@app.route("/search-youtube", methods=["POST"])
+@cross_origin()
+def search_youtube():
+    try:
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Prompt is required."}), 400
 
-    if not os.path.exists(LOG_FILE):
-        return "<h3>No activity logs found.</h3>"
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": prompt,
+            "type": "video",
+            "maxResults": 1,
+            "key": os.getenv("YOUTUBE_API_KEY")
+        }
 
-    with open(LOG_FILE) as f:
-        logs = json.load(f)
+        res = requests.get(url, params=params)
+        data = res.json()
 
-    now = datetime.now(timezone.utc)
-    users_1d, users_7d, users_30d = set(), set(), set()
+        if "items" not in data or not data["items"]:
+            return jsonify({"error": "No results found."}), 404
 
-    for log in logs:
-        t = parser.isoparse(log["timestamp"])
-        uid = log["user_id"]
-        if now - t <= timedelta(days=1):
-            users_1d.add(uid)
-        if now - t <= timedelta(days=7):
-            users_7d.add(uid)
-        if now - t <= timedelta(days=30):
-            users_30d.add(uid)
-
-    return f"""
-    <html><head><title>Droxion Dashboard</title>
-    <script src='https://cdn.jsdelivr.net/npm/chart.js'></script>
-    <style>
-    body {{ background: #111; color: #eee; font-family: sans-serif; padding: 20px; }}
-    canvas {{ background: #222; border-radius: 12px; }}
-    </style>
-    </head><body>
-    <h2>📊 Droxion Usage Dashboard</h2>
-    <canvas id='chart' width='400' height='200'></canvas>
-    <script>
-    const ctx = document.getElementById('chart').getContext('2d');
-    new Chart(ctx, {{
-        type: 'bar',
-        data: {{
-            labels: ['DAU', 'WAU', 'MAU'],
-            datasets: [{{
-                label: 'Active Users',
-                data: [{len(users_1d)}, {len(users_7d)}, {len(users_30d)}],
-                backgroundColor: ['#fff', '#ccc', '#888'],
-            }}]
-        }},
-        options: {{
-            plugins: {{ legend: {{ labels: {{ color: 'white' }} }} }},
-            scales: {{
-                y: {{ ticks: {{ color: 'white' }} }},
-                x: {{ ticks: {{ color: 'white' }} }}
-            }}
-        }}
-    }});
-    </script></body></html>
-    """
+        item = data["items"][0]
+        return jsonify({
+            "title": item["snippet"]["title"],
+            "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}"
+        })
+    except Exception as e:
+        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
