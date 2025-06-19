@@ -9,3 +9,4 @@ gunicorn
 moviepy
 python-dateutil
 pytz
+ipinfo
