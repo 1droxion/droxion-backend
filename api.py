@@ -79,118 +79,6 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
-@app.route("/analyze-image", methods=["POST"])
-def analyze_image():
-    try:
-        image = request.files.get("image")
-        prompt = request.form.get("prompt", "What's in this image?").strip()
-        if not image:
-            return jsonify({"reply": "❌ No image uploaded."}), 400
-
-        image_base64 = base64.b64encode(image.read()).decode("utf-8")
-
-        headers = {
-            "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
-            "Content-Type": "application/json"
-        }
-
-        messages = [
-            {"role": "system", "content": "You are a helpful AI that can understand images and describe them."},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_base64}"
-                        }
-                    }
-                ]
-            }
-        ]
-
-        payload = {
-            "model": "gpt-4-vision-preview",
-            "messages": messages,
-            "max_tokens": 500
-        }
-
-        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-        reply = res.json()["choices"][0]["message"]["content"]
-        return jsonify({"reply": reply})
-    except Exception as e:
-        return jsonify({"reply": f"❌ Vision error: {str(e)}"}), 500
-
-@app.route("/generate-image", methods=["POST"])
-def generate_image():
-    try:
-        prompt = request.json.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"error": "Prompt is required."}), 400
-
-        headers = {
-            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
-            "input": {
-                "prompt": prompt,
-                "width": 768,
-                "height": 768,
-                "num_inference_steps": 30,
-                "refine": "expert_ensemble_refiner",
-                "apply_watermark": False
-            }
-        }
-
-        create = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload)
-        prediction = create.json()
-        get_url = prediction.get("urls", {}).get("get")
-
-        while True:
-            poll = requests.get(get_url, headers=headers)
-            poll_result = poll.json()
-            if poll_result.get("status") == "succeeded":
-                return jsonify({"image_url": poll_result.get("output")})
-            elif poll_result.get("status") == "failed":
-                return jsonify({"error": "Prediction failed"}), 500
-            time.sleep(1)
-    except Exception as e:
-        return jsonify({"error": f"Image generation error: {str(e)}"}), 500
-
-@app.route("/search-youtube", methods=["POST"])
-def search_youtube():
-    try:
-        prompt = request.json.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"error": "Prompt is required."}), 400
-
-        url = "https://www.googleapis.com/youtube/v3/search"
-        params = {
-            "part": "snippet",
-            "q": prompt,
-            "type": "video",
-            "maxResults": 1,
-            "key": os.getenv("YOUTUBE_API_KEY")
-        }
-
-        res = requests.get(url, params=params)
-        data = res.json()
-
-        if "items" not in data or not data["items"]:
-            return jsonify({"error": "No results found."}), 404
-
-        item = data["items"][0]
-        return jsonify({
-            "title": item["snippet"]["title"],
-            "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}"
-        })
-    except Exception as e:
-        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
-
 @app.route("/track", methods=["POST"])
 def track():
     try:
@@ -199,11 +87,20 @@ def track():
         action = data.get("action")
         input_text = data.get("input")
         timestamp = data.get("timestamp", datetime.now(timezone.utc).isoformat())
+        ip = request.remote_addr
+        location = request.headers.get("X-Location", "")  # optional, can send from frontend
 
         if not user_id or not action:
             return jsonify({"error": "Missing user_id or action."}), 400
 
-        log = {"user_id": user_id, "action": action, "input": input_text, "timestamp": timestamp}
+        log = {
+            "user_id": user_id,
+            "action": action,
+            "input": input_text,
+            "timestamp": timestamp,
+            "ip": ip,
+            "location": location
+        }
 
         if not os.path.exists(LOG_FILE):
             with open(LOG_FILE, "w") as f:
@@ -219,86 +116,63 @@ def track():
     except Exception as e:
         return jsonify({"error": f"Tracking error: {str(e)}"}), 500
 
-@app.route("/stats", methods=["GET"])
-def stats():
-    try:
-        if not os.path.exists(LOG_FILE):
-            return jsonify({"dau": 0, "wau": 0, "mau": 0})
-
-        with open(LOG_FILE, "r") as f:
-            logs = json.load(f)
-
-        now = datetime.now(timezone.utc)
-        users_1d = set()
-        users_7d = set()
-        users_30d = set()
-
-        for log in logs:
-            t = parser.isoparse(log["timestamp"])
-            uid = log["user_id"]
-            if now - t <= timedelta(days=1):
-                users_1d.add(uid)
-            if now - t <= timedelta(days=7):
-                users_7d.add(uid)
-            if now - t <= timedelta(days=30):
-                users_30d.add(uid)
-
-        return jsonify({
-            "dau": len(users_1d),
-            "wau": len(users_7d),
-            "mau": len(users_30d)
-        })
-    except Exception as e:
-        return jsonify({"error": f"Stats error: {str(e)}"}), 500
-
-@app.route("/logs", methods=["GET"])
-def logs():
-    token = request.args.get("token", "")
+@app.route("/dashboard")
+def dashboard():
+    token = request.args.get("token")
     if token != "droxion2025":
         return "❌ Unauthorized", 403
 
     if not os.path.exists(LOG_FILE):
-        return "<h3>No log data found.</h3>"
+        return "<h3>No activity logs found.</h3>"
 
     with open(LOG_FILE) as f:
         logs = json.load(f)
 
-    html = """
-    <html>
-    <head>
-        <title>Droxion Logs</title>
-        <style>
-            body { font-family: Arial; background: #111; color: #eee; padding: 20px; }
-            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-            th, td { border: 1px solid #444; padding: 8px; text-align: left; }
-            th { background-color: #222; }
-            tr:nth-child(even) { background-color: #1a1a1a; }
-            .small { font-size: 12px; }
-        </style>
-    </head>
-    <body>
-        <h2>🗂️ Droxion User Logs</h2>
-        <table>
-            <tr>
-                <th>Timestamp</th>
-                <th>User ID</th>
-                <th>Action</th>
-                <th>Input</th>
-            </tr>
+    now = datetime.now(timezone.utc)
+    users_1d, users_7d, users_30d = set(), set(), set()
+
+    for log in logs:
+        t = parser.isoparse(log["timestamp"])
+        uid = log["user_id"]
+        if now - t <= timedelta(days=1):
+            users_1d.add(uid)
+        if now - t <= timedelta(days=7):
+            users_7d.add(uid)
+        if now - t <= timedelta(days=30):
+            users_30d.add(uid)
+
+    return f"""
+    <html><head><title>Droxion Dashboard</title>
+    <script src='https://cdn.jsdelivr.net/npm/chart.js'></script>
+    <style>
+    body {{ background: #111; color: #eee; font-family: sans-serif; padding: 20px; }}
+    canvas {{ background: #222; border-radius: 12px; }}
+    </style>
+    </head><body>
+    <h2>📊 Droxion Usage Dashboard</h2>
+    <canvas id='chart' width='400' height='200'></canvas>
+    <script>
+    const ctx = document.getElementById('chart').getContext('2d');
+    new Chart(ctx, {{
+        type: 'bar',
+        data: {{
+            labels: ['DAU', 'WAU', 'MAU'],
+            datasets: [{{
+                label: 'Active Users',
+                data: [{len(users_1d)}, {len(users_7d)}, {len(users_30d)}],
+                backgroundColor: ['#fff', '#ccc', '#888'],
+            }}]
+        }},
+        options: {{
+            plugins: {{ legend: {{ labels: {{ color: 'white' }} }} }},
+            scales: {{
+                y: {{ ticks: {{ color: 'white' }} }},
+                x: {{ ticks: {{ color: 'white' }} }}
+            }}
+        }}
+    }});
+    </script></body></html>
     """
-
-    for log in reversed(logs[-100:]):
-        html += f"""
-        <tr>
-            <td class='small'>{log.get("timestamp")}</td>
-            <td>{log.get("user_id")}</td>
-            <td>{log.get("action")}</td>
-            <td>{log.get("input", '')}</td>
-        </tr>
-        """
-
-    html += "</table></body></html>"
-    return html
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
