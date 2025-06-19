@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response, render_template_string
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -6,10 +6,8 @@ import requests
 import base64
 import time
 import json
-from collections import Counter
 from datetime import datetime, timedelta
-from dateutil import parser
-from pytz import utc
+import ipinfo
 
 load_dotenv()
 
@@ -22,7 +20,39 @@ CORS(app, supports_credentials=True, origins=[
 ])
 
 LOG_FILE = "user_logs.json"
-ALLOWED_TOKENS = ["droxion2025"]
+ipinfo_token = os.getenv("IPINFO_TOKEN", "")
+ip_handler = ipinfo.getHandler(ipinfo_token)
+
+def get_location_from_ip(ip):
+    try:
+        details = ip_handler.getDetails(ip)
+        city = details.city or ""
+        region = details.region or ""
+        country = details.country_name or ""
+        return ", ".join(filter(None, [city, region, country]))
+    except:
+        return ""
+
+def track_user_activity(user_id, action, input_data):
+    log_entry = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "user_id": user_id,
+        "action": action,
+        "input": input_data,
+        "ip": request.remote_addr,
+        "location": get_location_from_ip(request.remote_addr)
+    }
+    try:
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, "r") as f:
+                logs = json.load(f)
+        else:
+            logs = []
+        logs.append(log_entry)
+        with open(LOG_FILE, "w") as f:
+            json.dump(logs, f, indent=2)
+    except:
+        pass
 
 @app.route("/")
 def home():
@@ -35,10 +65,9 @@ def chat():
         prompt = data.get("prompt", "").strip().lower()
         video_mode = data.get("videoMode", False)
         voice_mode = data.get("voiceMode", False)
-        user_id = data.get("userId", "anonymous")
-        user_ip = request.remote_addr
 
-        log_action(user_id, "message", prompt, user_ip)
+        user_id = data.get("user_id", "anonymous")
+        track_user_activity(user_id, "message", prompt)
 
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
@@ -49,7 +78,7 @@ def chat():
         }
 
         messages = [
-            {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™."},
+            {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": prompt}
         ]
 
@@ -61,11 +90,7 @@ def chat():
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
 
-        return jsonify({
-            "reply": reply,
-            "videoMode": video_mode,
-            "voiceMode": voice_mode
-        })
+        return jsonify({"reply": reply, "videoMode": video_mode, "voiceMode": voice_mode})
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
@@ -137,104 +162,6 @@ def search_youtube():
         })
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
-
-@app.route("/dashboard")
-def dashboard():
-    token = request.args.get("token", "")
-    if token not in ALLOWED_TOKENS:
-        return Response("❌ Unauthorized", status=401)
-
-    try:
-        with open(LOG_FILE, "r") as f:
-            logs = json.load(f)
-    except:
-        logs = []
-
-    now = datetime.utcnow().replace(tzinfo=utc)
-    dau_cutoff = now - timedelta(days=1)
-    wau_cutoff = now - timedelta(weeks=1)
-    mau_cutoff = now - timedelta(days=30)
-
-    daus = set()
-    waus = set()
-    maus = set()
-    hour_counter = Counter()
-    input_counter = Counter()
-    user_counter = Counter()
-    location_counter = Counter()
-
-    rows = []
-    for entry in logs:
-        try:
-            t = parser.isoparse(entry["timestamp"])
-            uid = entry.get("user_id", "anon")
-            ip = entry.get("ip", "?")
-            loc = entry.get("location", "")
-
-            if t > dau_cutoff:
-                daus.add(uid)
-            if t > wau_cutoff:
-                waus.add(uid)
-            if t > mau_cutoff:
-                maus.add(uid)
-
-            hour_counter[t.strftime("%H:00")] += 1
-            input_counter[entry.get("input", "")] += 1
-            user_counter[uid] += 1
-            location_counter[loc] += 1
-
-            rows.append(entry)
-        except:
-            continue
-
-    html = f"""
-    <html><body style='background:#111;color:white;padding:2rem;'>
-    <h2>📊 Droxion Dashboard</h2>
-    <p>DAU: {len(daus)} | WAU: {len(waus)} | MAU: {len(maus)}</p>
-    <p>Peak usage hour: {hour_counter.most_common(1)[0][0] if hour_counter else 'N/A'}</p>
-    <p>Top Users: {dict(user_counter.most_common(3))}</p>
-    <p>Top Locations: {dict(location_counter.most_common(3))}</p>
-    <p>Top Inputs: {dict(input_counter.most_common(4))}</p>
-    <hr/>
-    <p><code>Filter: ?token=droxion2025&days=7&user=yourid</code></p>
-    <h3>User Activity Logs</h3>
-    <table border='1' cellspacing='0' cellpadding='6'>
-        <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
-    """
-
-    for r in rows[-100:][::-1]:
-        html += f"<tr><td>{r['timestamp']}</td><td>{r['user_id']}</td><td>{r['action']}</td><td>{r['input']}</td><td>{r.get('ip','')}</td><td>{r.get('location','')}</td></tr>"
-
-    html += "</table></body></html>"
-    return render_template_string(html)
-
-def log_action(user_id, action, text, ip):
-    entry = {
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "user_id": user_id,
-        "action": action,
-        "input": text,
-        "ip": ip
-    }
-
-    try:
-        geo = requests.get(f"https://ipinfo.io/{ip}/json").json()
-        city = geo.get("city", "")
-        region = geo.get("region", "")
-        country = geo.get("country", "")
-        entry["location"] = ", ".join([city, region, country]).strip(', ')
-    except:
-        entry["location"] = ""
-
-    try:
-        with open(LOG_FILE, "r") as f:
-            data = json.load(f)
-    except:
-        data = []
-
-    data.append(entry)
-    with open(LOG_FILE, "w") as f:
-        json.dump(data, f, indent=2)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
