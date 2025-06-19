@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS, cross_origin
 from dotenv import load_dotenv
 import os
@@ -8,7 +8,6 @@ import time
 import json
 from datetime import datetime, timedelta, timezone
 from dateutil import parser
-from collections import Counter
 
 load_dotenv()
 
@@ -151,6 +150,33 @@ def search_youtube():
         })
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
+
+@app.route("/logs.json", methods=["GET"])
+@cross_origin()
+def download_logs_json():
+    token = request.args.get("token")
+    if token != os.getenv("ADMIN_TOKEN", "droxion2025"):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        with open(LOG_FILE, "r") as f:
+            logs = json.load(f)
+
+        days = int(request.args.get("days", 0))
+        user_filter = request.args.get("user")
+        if days:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            logs = [log for log in logs if parser.parse(log["timestamp"]) >= cutoff]
+
+        if user_filter:
+            logs = [log for log in logs if log["user_id"] == user_filter]
+
+        response = make_response(json.dumps(logs, indent=2))
+        response.headers["Content-Disposition"] = "attachment; filename=logs.json"
+        response.headers["Content-Type"] = "application/json"
+        return response
+    except Exception as e:
+        return jsonify({"error": f"Log export error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
