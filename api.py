@@ -5,7 +5,6 @@ import os
 import requests
 import base64
 import time
-from PIL import Image
 
 load_dotenv()
 
@@ -75,6 +74,49 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
+@app.route("/analyze-image", methods=["POST"])
+def analyze_image():
+    try:
+        image = request.files.get("image")
+        prompt = request.form.get("prompt", "What's in this image?").strip()
+        if not image:
+            return jsonify({"reply": "❌ No image uploaded."}), 400
+
+        image_base64 = base64.b64encode(image.read()).decode("utf-8")
+
+        headers = {
+            "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+
+        messages = [
+            {"role": "system", "content": "You are a helpful AI that can understand images and describe them."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_base64}"
+                        }
+                    }
+                ]
+            }
+        ]
+
+        payload = {
+            "model": "gpt-4-vision-preview",
+            "messages": messages,
+            "max_tokens": 500
+        }
+
+        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+        reply = res.json()["choices"][0]["message"]["content"]
+        return jsonify({"reply": reply})
+    except Exception as e:
+        return jsonify({"reply": f"❌ Vision error: {str(e)}"}), 500
+
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -113,20 +155,6 @@ def generate_image():
             time.sleep(1)
     except Exception as e:
         return jsonify({"error": f"Image generation error: {str(e)}"}), 500
-
-@app.route("/describe-image", methods=["POST"])
-def describe_image():
-    try:
-        if "image" not in request.files:
-            return jsonify({"error": "No image uploaded"}), 400
-
-        image = request.files["image"]
-        img = Image.open(image.stream)
-        description = f"The image format is {img.format}. Size: {img.size[0]}x{img.size[1]}. Color mode: {img.mode}."
-        return jsonify({ "description": description })
-
-    except Exception as e:
-        return jsonify({ "error": f"❌ Failed to analyze image: {str(e)}" }), 500
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
