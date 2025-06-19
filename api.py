@@ -228,7 +228,7 @@ def stats():
         with open(LOG_FILE, "r") as f:
             logs = json.load(f)
 
-        now = datetime.now(timezone.utc)  # ✅ make aware
+        now = datetime.now(timezone.utc)
         users_1d = set()
         users_7d = set()
         users_30d = set()
@@ -250,6 +250,55 @@ def stats():
         })
     except Exception as e:
         return jsonify({"error": f"Stats error: {str(e)}"}), 500
+
+@app.route("/logs", methods=["GET"])
+def logs():
+    token = request.args.get("token", "")
+    if token != "droxion2025":
+        return "❌ Unauthorized", 403
+
+    if not os.path.exists(LOG_FILE):
+        return "<h3>No log data found.</h3>"
+
+    with open(LOG_FILE) as f:
+        logs = json.load(f)
+
+    html = """
+    <html>
+    <head>
+        <title>Droxion Logs</title>
+        <style>
+            body { font-family: Arial; background: #111; color: #eee; padding: 20px; }
+            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+            th, td { border: 1px solid #444; padding: 8px; text-align: left; }
+            th { background-color: #222; }
+            tr:nth-child(even) { background-color: #1a1a1a; }
+            .small { font-size: 12px; }
+        </style>
+    </head>
+    <body>
+        <h2>🗂️ Droxion User Logs</h2>
+        <table>
+            <tr>
+                <th>Timestamp</th>
+                <th>User ID</th>
+                <th>Action</th>
+                <th>Input</th>
+            </tr>
+    """
+
+    for log in reversed(logs[-100:]):
+        html += f"""
+        <tr>
+            <td class='small'>{log.get("timestamp")}</td>
+            <td>{log.get("user_id")}</td>
+            <td>{log.get("action")}</td>
+            <td>{log.get("input", '')}</td>
+        </tr>
+        """
+
+    html += "</table></body></html>"
+    return html
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
