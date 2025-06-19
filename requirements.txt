@@ -7,3 +7,4 @@ requests
 python-dotenv
 gunicorn
 moviepy
+python-dateutil
