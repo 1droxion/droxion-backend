@@ -1,10 +1,7 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
-import os
-import requests
-import json
-import time
+import os, requests, json, time
 from datetime import datetime
 from collections import Counter
 from dateutil import parser
@@ -13,20 +10,25 @@ import pytz
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True, origins=[
-    "https://www.droxion.com",
-    "https://droxion.com",
-    "https://droxion.vercel.app",
-    "http://localhost:5173"
-])
+CORS(app, origins="*", supports_credentials=True)
 
 LOG_FILE = "user_logs.json"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
+# === MANUAL CORS HEADER FIX ===
 @app.after_request
-def after_request(response):
+def add_cors_headers(response):
+    response.headers.add("Access-Control-Allow-Origin", "*")
     response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
     response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+    return response
+
+@app.route("/<path:path>", methods=["OPTIONS"])
+def handle_options(path):
+    response = make_response()
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     return response
 
 def get_location_from_ip(ip):
@@ -61,7 +63,6 @@ def log_user_action(user_id, action, input_text, ip):
                 logs = json.load(f)
         except:
             logs = []
-
     logs.append(new_entry)
     with open(LOG_FILE, "w") as f:
         json.dump(logs, f, indent=2)
@@ -147,6 +148,62 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
+@app.route("/generate-image", methods=["POST"])
+def generate_image():
+    try:
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
+
+        headers = {
+            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+            "input": {
+                "prompt": prompt,
+                "width": 768,
+                "height": 768
+            }
+        }
+
+        r = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
+        poll_url = r["urls"]["get"]
+
+        while True:
+            poll = requests.get(poll_url, headers=headers).json()
+            if poll["status"] == "succeeded":
+                return jsonify({"image_url": poll["output"]})
+            elif poll["status"] == "failed":
+                return jsonify({"error": "Image generation failed"}), 500
+            time.sleep(1)
+    except Exception as e:
+        return jsonify({"error": f"Image error: {str(e)}"}), 500
+
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    try:
+        prompt = request.json.get("prompt", "")
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": prompt,
+            "type": "video",
+            "maxResults": 1,
+            "key": os.getenv("YOUTUBE_API_KEY")
+        }
+        res = requests.get(url, params=params).json()
+        item = res["items"][0]
+        video_id = item["id"]["videoId"]
+        return jsonify({
+            "title": item["snippet"]["title"],
+            "url": f"https://www.youtube.com/watch?v={video_id}"
+        })
+    except Exception as e:
+        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
+
 @app.route("/dashboard")
 def dashboard():
     token = request.args.get("token", "")
@@ -158,33 +215,13 @@ def dashboard():
 
     html = """
     <style>
-        body {
-            background-color: #000;
-            color: #fff;
-            font-family: Arial, sans-serif;
-            padding: 20px;
-        }
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            margin-top: 20px;
-        }
-        th, td {
-            border: 1px solid #444;
-            padding: 8px;
-            text-align: left;
-        }
-        th {
-            background-color: #222;
-        }
-        tr:nth-child(even) {
-            background-color: #111;
-        }
-        h2, h4 {
-            color: #0ff;
-        }
+        body { background:#000; color:#fff; font-family:Arial; padding:20px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { border: 1px solid #444; padding: 8px; text-align: left; }
+        th { background-color: #222; }
+        tr:nth-child(even) { background-color: #111; }
+        h2, h4 { color: #0ff; }
     </style>
-
     <h2>📊 Droxion Dashboard</h2>
     <div>DAU: {{stats['dau']}} | WAU: {{stats['wau']}} | MAU: {{stats['mau']}}</div>
     <div>Peak Hour: {{stats['peak_hour']}}</div>
