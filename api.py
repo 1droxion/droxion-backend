@@ -6,8 +6,8 @@ import requests
 import json
 import base64
 import time
-from datetime import datetime, timedelta
-from collections import Counter, defaultdict
+from datetime import datetime
+from collections import Counter
 from dateutil import parser
 import pytz
 
@@ -25,6 +25,22 @@ LOG_FILE = "user_logs.json"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
 # --- UTILS ---
+
+def get_location_from_ip(ip):
+    try:
+        # Take first IP if multiple
+        main_ip = ip.split(",")[0].strip()
+        res = requests.get(f"http://ip-api.com/json/{main_ip}")
+        data = res.json()
+        if data["status"] == "success":
+            return f"{data['city']}, {data['countryCode']}"
+        return ""
+    except:
+        return ""
+
+def get_client_ip():
+    return request.headers.get("X-Forwarded-For", request.remote_addr)
+
 def log_user_action(user_id, action, input_text, ip):
     now = datetime.utcnow().isoformat() + "Z"
     location = get_location_from_ip(ip)
@@ -47,19 +63,6 @@ def log_user_action(user_id, action, input_text, ip):
     logs.append(new_entry)
     with open(LOG_FILE, "w") as f:
         json.dump(logs, f, indent=2)
-
-def get_location_from_ip(ip):
-    try:
-        res = requests.get(f"http://ip-api.com/json/{ip}")
-        data = res.json()
-        if data["status"] == "success":
-            return f"{data['city']}, {data['countryCode']}"
-        return ""
-    except:
-        return ""
-
-def get_client_ip():
-    return request.headers.get("X-Forwarded-For", request.remote_addr)
 
 def parse_logs(file_path, user_filter=None, days=7):
     now = datetime.utcnow().replace(tzinfo=pytz.UTC)
@@ -101,6 +104,7 @@ def parse_logs(file_path, user_filter=None, days=7):
     }
 
 # --- ROUTES ---
+
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
