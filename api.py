@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 import os
 import requests
 import json
-import base64
 import time
 from datetime import datetime
 from collections import Counter
@@ -24,11 +23,14 @@ CORS(app, supports_credentials=True, origins=[
 LOG_FILE = "user_logs.json"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
-# --- UTILS ---
+@app.after_request
+def after_request(response):
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+    return response
 
 def get_location_from_ip(ip):
     try:
-        # Take first IP if multiple
         main_ip = ip.split(",")[0].strip()
         res = requests.get(f"http://ip-api.com/json/{main_ip}")
         data = res.json()
@@ -103,8 +105,6 @@ def parse_logs(file_path, user_filter=None, days=7):
         "logs": logs[-100:]
     }
 
-# --- ROUTES ---
-
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
@@ -147,62 +147,6 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
-@app.route("/generate-image", methods=["POST"])
-def generate_image():
-    try:
-        prompt = request.json.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"error": "Prompt is required"}), 400
-
-        headers = {
-            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
-            "input": {
-                "prompt": prompt,
-                "width": 768,
-                "height": 768
-            }
-        }
-
-        r = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
-        poll_url = r["urls"]["get"]
-
-        while True:
-            poll = requests.get(poll_url, headers=headers).json()
-            if poll["status"] == "succeeded":
-                return jsonify({"image_url": poll["output"]})
-            elif poll["status"] == "failed":
-                return jsonify({"error": "Image generation failed"}), 500
-            time.sleep(1)
-    except Exception as e:
-        return jsonify({"error": f"Image error: {str(e)}"}), 500
-
-@app.route("/search-youtube", methods=["POST"])
-def search_youtube():
-    try:
-        prompt = request.json.get("prompt", "")
-        url = "https://www.googleapis.com/youtube/v3/search"
-        params = {
-            "part": "snippet",
-            "q": prompt,
-            "type": "video",
-            "maxResults": 1,
-            "key": os.getenv("YOUTUBE_API_KEY")
-        }
-        res = requests.get(url, params=params).json()
-        item = res["items"][0]
-        video_id = item["id"]["videoId"]
-        return jsonify({
-            "title": item["snippet"]["title"],
-            "url": f"https://www.youtube.com/watch?v={video_id}"
-        })
-    except Exception as e:
-        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
-
 @app.route("/dashboard")
 def dashboard():
     token = request.args.get("token", "")
@@ -213,6 +157,34 @@ def dashboard():
     stats = parse_logs(LOG_FILE, user_filter, days)
 
     html = """
+    <style>
+        body {
+            background-color: #000;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #444;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #222;
+        }
+        tr:nth-child(even) {
+            background-color: #111;
+        }
+        h2, h4 {
+            color: #0ff;
+        }
+    </style>
+
     <h2>📊 Droxion Dashboard</h2>
     <div>DAU: {{stats['dau']}} | WAU: {{stats['wau']}} | MAU: {{stats['mau']}}</div>
     <div>Peak Hour: {{stats['peak_hour']}}</div>
@@ -221,7 +193,7 @@ def dashboard():
     <div>Top Locations: {{stats['top_locations']}}</div>
     <hr>
     <h4>User Activity Logs</h4>
-    <table border="1" cellpadding="5">
+    <table>
         <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
         {% for log in stats['logs'] %}
         <tr>
