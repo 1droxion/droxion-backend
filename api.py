@@ -1,24 +1,24 @@
-from flask import Flask, request, jsonify, make_response
-from flask_cors import CORS, cross_origin
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 import requests
 import base64
 import time
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from dateutil import parser
 from collections import Counter
 
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True, resources={r"/*": {"origins": [
+CORS(app, supports_credentials=True, origins=[
     "https://www.droxion.com",
     "https://droxion.com",
     "https://droxion.vercel.app",
     "http://localhost:5173"
-]}})
+])
 
 LOG_FILE = "user_logs.json"
 
@@ -27,16 +27,20 @@ def home():
     return "✅ Droxion API is live."
 
 @app.route("/chat", methods=["POST"])
-@cross_origin()
 def chat():
     try:
         data = request.json
         prompt = data.get("prompt", "").strip().lower()
         video_mode = data.get("videoMode", False)
         voice_mode = data.get("voiceMode", False)
+        user_id = data.get("user_id", "anonymous")
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+        location = get_location_from_ip(ip)
 
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
+
+        log_user_action(user_id, "message", prompt, ip, location)
 
         if "tarak mehta video" in prompt or "youtube" in prompt:
             return jsonify({
@@ -58,7 +62,10 @@ def chat():
         }
 
         messages = [
-            {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™."},
+            {
+                "role": "system",
+                "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™. If someone asks 'who made you', reply with that."
+            },
             {"role": "user", "content": prompt}
         ]
 
@@ -79,7 +86,6 @@ def chat():
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
 @app.route("/generate-image", methods=["POST"])
-@cross_origin()
 def generate_image():
     try:
         prompt = request.json.get("prompt", "").strip()
@@ -119,7 +125,6 @@ def generate_image():
         return jsonify({"error": f"Image generation error: {str(e)}"}), 500
 
 @app.route("/search-youtube", methods=["POST"])
-@cross_origin()
 def search_youtube():
     try:
         prompt = request.json.get("prompt", "").strip()
@@ -149,113 +154,64 @@ def search_youtube():
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
-@app.route("/track", methods=["POST"])
-@cross_origin()
-def track():
-    try:
-        data = request.json
-        user_id = data.get("user_id")
-        action = data.get("action")
-        input_text = data.get("input")
-        timestamp = data.get("timestamp", datetime.now(timezone.utc).isoformat())
-        ip = request.remote_addr
-        location = request.headers.get("X-Location", "")
-
-        if not user_id or not action:
-            return jsonify({"error": "Missing user_id or action."}), 400
-
-        log = {
-            "user_id": user_id,
-            "action": action,
-            "input": input_text,
-            "timestamp": timestamp,
-            "ip": ip,
-            "location": location
-        }
-
-        if not os.path.exists(LOG_FILE):
-            with open(LOG_FILE, "w") as f:
-                json.dump([log], f, indent=2)
-        else:
-            with open(LOG_FILE, "r+") as f:
-                logs = json.load(f)
-                logs.append(log)
-                f.seek(0)
-                json.dump(logs, f, indent=2)
-
-        return jsonify({"status": "logged"})
-    except Exception as e:
-        return jsonify({"error": f"Tracking error: {str(e)}"}), 500
-
-@app.route("/dashboard")
-@cross_origin()
-def dashboard():
+@app.route("/logs")
+def view_logs():
     token = request.args.get("token")
-    if token != "droxion2025":
+    if token != os.getenv("ADMIN_TOKEN"):
         return "❌ Unauthorized", 403
 
-    if not os.path.exists(LOG_FILE):
-        return "<h3>No activity logs found.</h3>"
+    try:
+        with open(LOG_FILE, "r") as f:
+            logs = json.load(f)
+    except:
+        logs = []
 
-    with open(LOG_FILE) as f:
-        logs = json.load(f)
+    return jsonify(logs)
 
-    now = datetime.now(timezone.utc)
-    days = int(request.args.get("days", 30))
-    filter_user = request.args.get("user")
+@app.route("/dashboard")
+def dashboard():
+    token = request.args.get("token")
+    if token != os.getenv("ADMIN_TOKEN"):
+        return "❌ Unauthorized", 403
 
-    filtered_logs = []
-    users_1d, users_7d, users_30d = set(), set(), set()
-    hour_usage = []
-    user_counts = Counter()
-    locations = Counter()
-    queries = Counter()
+    try:
+        with open(LOG_FILE, "r") as f:
+            logs = json.load(f)
+    except:
+        logs = []
 
-    for log in logs:
-        t = parser.isoparse(log["timestamp"])
-        uid = log["user_id"]
-        if now - t <= timedelta(days=1): users_1d.add(uid)
-        if now - t <= timedelta(days=7): users_7d.add(uid)
-        if now - t <= timedelta(days=30): users_30d.add(uid)
+    return send_file("dashboard.html")
 
-        if now - t <= timedelta(days=days):
-            if not filter_user or uid == filter_user:
-                filtered_logs.append(log)
-                hour_usage.append(t.hour)
-                user_counts[uid] += 1
-                if log.get("location"): locations[log["location"]] += 1
-                if log.get("input"): queries[log["input"]] += 1
+def log_user_action(user_id, action, input_text, ip, location):
+    log_entry = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "user_id": user_id,
+        "action": action,
+        "input": input_text,
+        "ip": ip,
+        "location": location
+    }
 
-    peak_hour = Counter(hour_usage).most_common(1)
-    top_locations = locations.most_common(3)
-    top_queries = queries.most_common(5)
+    logs = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r") as f:
+            try:
+                logs = json.load(f)
+            except:
+                logs = []
 
-    html = f"""
-    <html><head><title>Droxion Dashboard</title>
-    <style>
-    body {{ background: #111; color: #eee; font-family: sans-serif; padding: 20px; }}
-    .card {{ background: #222; padding: 10px; margin: 8px 0; border-radius: 8px; }}
-    table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-    th, td {{ border: 1px solid #444; padding: 6px; font-size: 13px; }}
-    th {{ background-color: #222; }}
-    tr:nth-child(even) {{ background-color: #1a1a1a; }}
-    </style></head><body>
-    <h2>📊 Droxion Dashboard</h2>
-    <div class='card'>DAU: {len(users_1d)} | WAU: {len(users_7d)} | MAU: {len(users_30d)}</div>
-    <div class='card'>Peak usage hour: {peak_hour[0][0]}:00</div>
-    <div class='card'>Top Users: {dict(user_counts.most_common(3))}</div>
-    <div class='card'>Top Locations: {dict(top_locations)}</div>
-    <div class='card'>Top Inputs: {dict(top_queries)}</div>
-    <div class='card'>Filter: ?token=droxion2025&days=7&user=yourid</div>
-    <h3>User Activity Logs</h3>
-    <table>
-    <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
-    """
-    for log in reversed(filtered_logs[-100:]):
-        html += f"<tr><td>{log['timestamp']}</td><td>{log['user_id']}</td><td>{log['action']}</td><td>{log.get('input','')}</td><td>{log.get('ip','')}</td><td>{log.get('location','')}</td></tr>"
+    logs.append(log_entry)
 
-    html += "</table></body></html>"
-    return html
+    with open(LOG_FILE, "w") as f:
+        json.dump(logs, f, indent=2)
+
+def get_location_from_ip(ip):
+    try:
+        res = requests.get(f"https://ipapi.co/{ip}/json/")
+        data = res.json()
+        return f"{data.get('city', '')}, {data.get('country_name', '')}"
+    except:
+        return ""
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
