@@ -6,8 +6,8 @@ import requests
 import base64
 import time
 import json
-from datetime import datetime, timedelta
-from dateutil import parser  # ✅ Fix timezone-aware parsing
+from datetime import datetime, timedelta, timezone
+from dateutil import parser
 
 load_dotenv()
 
@@ -198,7 +198,7 @@ def track():
         user_id = data.get("user_id")
         action = data.get("action")
         input_text = data.get("input")
-        timestamp = data.get("timestamp", datetime.utcnow().isoformat())
+        timestamp = data.get("timestamp", datetime.now(timezone.utc).isoformat())
 
         if not user_id or not action:
             return jsonify({"error": "Missing user_id or action."}), 400
@@ -228,13 +228,13 @@ def stats():
         with open(LOG_FILE, "r") as f:
             logs = json.load(f)
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)  # ✅ make aware
         users_1d = set()
         users_7d = set()
         users_30d = set()
 
         for log in logs:
-            t = parser.isoparse(log["timestamp"])  # ✅ Fix for aware timestamps
+            t = parser.isoparse(log["timestamp"])
             uid = log["user_id"]
             if now - t <= timedelta(days=1):
                 users_1d.add(uid)
