@@ -7,6 +7,7 @@ import base64
 import time
 import json
 from datetime import datetime, timedelta
+from dateutil import parser  # ✅ Fix timezone-aware parsing
 
 load_dotenv()
 
@@ -233,7 +234,7 @@ def stats():
         users_30d = set()
 
         for log in logs:
-            t = datetime.fromisoformat(log["timestamp"])
+            t = parser.isoparse(log["timestamp"])  # ✅ Fix for aware timestamps
             uid = log["user_id"]
             if now - t <= timedelta(days=1):
                 users_1d.add(uid)
