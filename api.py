@@ -5,6 +5,7 @@ import os
 import requests
 import base64
 import time
+from PIL import Image
 
 load_dotenv()
 
@@ -31,7 +32,6 @@ def chat():
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
 
-        # 👉 YOUTUBE VIDEO DETECTION
         if "tarak mehta video" in prompt or "youtube" in prompt:
             return jsonify({
                 "reply": '<iframe width="100%" height="315" src="https://www.youtube.com/embed/tgbNymZ7vqY" frameborder="0" allowfullscreen></iframe>',
@@ -39,7 +39,6 @@ def chat():
                 "voiceMode": voice_mode
             })
 
-        # 👉 CAR IMAGE GENERATION
         if "car image" in prompt or "image create" in prompt:
             return jsonify({
                 "reply": '<img src="https://source.unsplash.com/600x400/?car" alt="Car Image" />',
@@ -47,7 +46,6 @@ def chat():
                 "voiceMode": voice_mode
             })
 
-        # 👉 NORMAL CHAT (OPENAI)
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
             "Content-Type": "application/json"
@@ -77,9 +75,6 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
-# 🔽 The rest of your unchanged routes (image, youtube, avatar, etc.)
-
-# Generate Image
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -119,7 +114,6 @@ def generate_image():
     except Exception as e:
         return jsonify({"error": f"Image generation error: {str(e)}"}), 500
 
-# Analyze Image
 @app.route("/analyze-image", methods=["POST"])
 def analyze_image():
     try:
@@ -163,7 +157,19 @@ def analyze_image():
     except Exception as e:
         return jsonify({"reply": f"❌ Vision error: {str(e)}"}), 500
 
-# YouTube Search
+@app.route("/describe-image", methods=["POST"])
+def describe_image():
+    try:
+        image = request.files.get("image")
+        if not image:
+            return jsonify({"error": "No image uploaded"}), 400
+
+        img = Image.open(image.stream)
+        description = f"The uploaded image is {img.format} format, size {img.size}, and mode {img.mode}."
+        return jsonify({"description": description})
+    except Exception as e:
+        return jsonify({"error": f"Image description error: {str(e)}"}), 500
+
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     try:
@@ -194,7 +200,6 @@ def search_youtube():
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
-# News
 @app.route("/news", methods=["POST"])
 def search_news():
     try:
@@ -211,7 +216,6 @@ def search_news():
     except Exception as e:
         return jsonify({"error": f"News error: {str(e)}"}), 500
 
-# AI Avatar
 @app.route("/talk-avatar", methods=["POST"])
 def talk_avatar():
     try:
