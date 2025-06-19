@@ -114,61 +114,19 @@ def generate_image():
     except Exception as e:
         return jsonify({"error": f"Image generation error: {str(e)}"}), 500
 
-@app.route("/analyze-image", methods=["POST"])
-def analyze_image():
-    try:
-        image = request.files.get("image")
-        prompt = request.form.get("prompt", "").strip()
-        if not image:
-            return jsonify({"reply": "❌ No image uploaded."}), 400
-
-        image_base64 = base64.b64encode(image.read()).decode("utf-8")
-
-        headers = {
-            "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
-            "Content-Type": "application/json"
-        }
-
-        messages = [
-            {"role": "system", "content": "You are an AI image analyst."},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_base64}"
-                        }
-                    }
-                ]
-            }
-        ]
-
-        payload = {
-            "model": "gpt-4-vision-preview",
-            "messages": messages,
-            "max_tokens": 500
-        }
-
-        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
-        reply = res.json()["choices"][0]["message"]["content"]
-        return jsonify({"reply": reply})
-    except Exception as e:
-        return jsonify({"reply": f"❌ Vision error: {str(e)}"}), 500
-
 @app.route("/describe-image", methods=["POST"])
 def describe_image():
     try:
-        image = request.files.get("image")
-        if not image:
+        if "image" not in request.files:
             return jsonify({"error": "No image uploaded"}), 400
 
+        image = request.files["image"]
         img = Image.open(image.stream)
-        description = f"The uploaded image is {img.format} format, size {img.size}, and mode {img.mode}."
-        return jsonify({"description": description})
+        description = f"The image format is {img.format}. Size: {img.size[0]}x{img.size[1]}. Color mode: {img.mode}."
+        return jsonify({ "description": description })
+
     except Exception as e:
-        return jsonify({"error": f"Image description error: {str(e)}"}), 500
+        return jsonify({ "error": f"❌ Failed to analyze image: {str(e)}" }), 500
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
@@ -199,53 +157,6 @@ def search_youtube():
         })
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
-
-@app.route("/news", methods=["POST"])
-def search_news():
-    try:
-        prompt = request.json.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"headlines": []})
-
-        gnews_key = os.getenv("GNEWS_API_KEY")
-        url = f"https://gnews.io/api/v4/search?q={prompt}&lang=en&max=3&apikey={gnews_key}"
-        res = requests.get(url)
-        articles = res.json().get("articles", [])[:3]
-        headlines = [a["title"] for a in articles]
-        return jsonify({"headlines": headlines})
-    except Exception as e:
-        return jsonify({"error": f"News error: {str(e)}"}), 500
-
-@app.route("/talk-avatar", methods=["POST"])
-def talk_avatar():
-    try:
-        image = request.files.get("image")
-        prompt = request.form.get("prompt", "")
-        if not image or not prompt:
-            return jsonify({"error": "Image and script required"}), 400
-
-        image_base64 = base64.b64encode(image.read()).decode("utf-8")
-
-        headers = {
-            "Authorization": f"Basic {os.getenv('DID_API_KEY')}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "source_url": f"data:image/jpeg;base64,{image_base64}",
-            "script": {
-                "type": "text",
-                "input": prompt,
-                "provider": {"type": "microsoft", "voice_id": "en-US-JennyNeural"}
-            }
-        }
-
-        res = requests.post("https://api.d-id.com/talks", headers=headers, json=payload)
-        data = res.json()
-        video_url = data.get("result_url", "")
-        return jsonify({"video_url": video_url})
-    except Exception as e:
-        return jsonify({"error": f"Avatar error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
