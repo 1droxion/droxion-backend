@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -6,16 +6,15 @@ import requests
 import base64
 import time
 import json
-import uuid
 from datetime import datetime, timedelta
-import pytz
+from collections import Counter
+from dateutil import parser
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=[
     "https://www.droxion.com",
-    "https://droxion.com",
     "https://droxion.vercel.app",
     "http://localhost:5173"
 ])
@@ -33,14 +32,13 @@ def chat():
         prompt = data.get("prompt", "").strip().lower()
         video_mode = data.get("videoMode", False)
         voice_mode = data.get("voiceMode", False)
-        user_id = data.get("userId", f"user-{uuid.uuid4().hex[:8]}")
-        ip = request.remote_addr
-        location = os.getenv("USER_LOCATION", "")
-
-        log_event(user_id, "message", prompt, ip, location)
+        user_id = data.get("user_id", "anonymous")
 
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
+
+        # Log the message
+        log_user_action(user_id, "message", prompt)
 
         if "tarak mehta video" in prompt or "youtube" in prompt:
             return jsonify({
@@ -60,107 +58,110 @@ def chat():
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
             "Content-Type": "application/json"
         }
-
         messages = [
-            {
-                "role": "system",
-                "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™. If someone asks 'who made you', reply with that."
-            },
+            {"role": "system", "content": "You are an assistant created by Dhruv Patel, named Droxion."},
             {"role": "user", "content": prompt}
         ]
-
-        payload = {
-            "model": "gpt-4",
-            "messages": messages
-        }
-
+        payload = {"model": "gpt-4", "messages": messages}
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
 
-        return jsonify({
-            "reply": reply,
-            "videoMode": video_mode,
-            "voiceMode": voice_mode
-        })
+        return jsonify({"reply": reply, "videoMode": video_mode, "voiceMode": voice_mode})
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
-@app.route("/dashboard")
-def dashboard():
-    token = request.args.get("token", "")
-    if token != "droxion2025":
-        return "❌ Unauthorized", 401
-
+@app.route("/track", methods=["POST"])
+def track():
     try:
-        with open(LOG_FILE, "r") as f:
-            logs = json.load(f)
-    except:
-        logs = []
+        data = request.json
+        user_id = data.get("user_id", "anonymous")
+        action = data.get("action", "unknown")
+        input_text = data.get("input", "")
+        ip = request.remote_addr or "unknown"
+        location = ""
 
-    now = datetime.now(pytz.utc)
-    daily_users, weekly_users, monthly_users = set(), set(), set()
-    hours, top_inputs, top_users, top_locations = {}, {}, {}, {}
-
-    for log in logs:
         try:
-            timestamp = datetime.fromisoformat(log["timestamp"].replace("Z", "+00:00"))
+            loc_res = requests.get(f"https://ipapi.co/{ip}/country_name/")
+            if loc_res.status_code == 200:
+                location = loc_res.text.strip()
         except:
-            continue
+            location = ""
 
-        user = log.get("user_id", "anonymous")
-        ip = log.get("ip", "")
-        location = log.get("location", "")
-        text = log.get("input", "").strip()
+        log_entry = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "user_id": user_id,
+            "action": action,
+            "input": input_text,
+            "ip": ip,
+            "location": location
+        }
 
-        delta = now - timestamp
-        if delta <= timedelta(days=1): daily_users.add(user)
-        if delta <= timedelta(days=7): weekly_users.add(user)
-        if delta <= timedelta(days=30): monthly_users.add(user)
-
-        hours[timestamp.hour] = hours.get(timestamp.hour, 0) + 1
-        if text: top_inputs[text] = top_inputs.get(text, 0) + 1
-        top_users[user] = top_users.get(user, 0) + 1
-        if location: top_locations[location] = top_locations.get(location, 0) + 1
-
-    table = "<table border=1 cellpadding=8><tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>"
-    for log in reversed(logs[-20:]):
-        table += f"<tr><td>{log['timestamp']}</td><td>{log.get('user_id','')}</td><td>{log['action']}</td><td>{log.get('input','')}</td><td>{log.get('ip','')}</td><td>{log.get('location','')}</td></tr>"
-    table += "</table>"
-
-    return render_template_string(f"""
-    <html style='background:#111;color:white;padding:2rem;font-family:sans-serif'>
-      <h2>📊 Droxion Dashboard</h2>
-      <p><b>DAU:</b> {len(daily_users)} | <b>WAU:</b> {len(weekly_users)} | <b>MAU:</b> {len(monthly_users)}</p>
-      <p><b>Peak usage hour:</b> {max(hours, key=hours.get) if hours else 0}:00</p>
-      <p><b>Top Users:</b> {top_users}</p>
-      <p><b>Top Locations:</b> {top_locations}</p>
-      <p><b>Top Inputs:</b> {top_inputs}</p>
-      <p><i>Filter: ?token=droxion2025&days=7&user=yourid</i></p>
-      <h3>User Activity Logs</h3>
-      {table}
-    </html>
-    """)
-
-def log_event(user_id, action, input_text, ip, location):
-    log = {
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "user_id": user_id,
-        "action": action,
-        "input": input_text,
-        "ip": ip,
-        "location": location
-    }
-    try:
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, "r") as f:
                 logs = json.load(f)
         else:
             logs = []
-    except:
-        logs = []
-    logs.append(log)
-    with open(LOG_FILE, "w") as f:
-        json.dump(logs, f, indent=2)
+
+        logs.append(log_entry)
+        with open(LOG_FILE, "w") as f:
+            json.dump(logs, f)
+
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/dashboard")
+def dashboard():
+    try:
+        token = request.args.get("token")
+        if token != os.getenv("ADMIN_TOKEN"):
+            return "<h1>❌ Unauthorized</h1>", 403
+
+        user_filter = request.args.get("user")
+        days = int(request.args.get("days", 7))
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
+        if not os.path.exists(LOG_FILE):
+            return "No data"
+
+        with open(LOG_FILE, "r") as f:
+            logs = json.load(f)
+
+        logs = [log for log in logs if parser.parse(log["timestamp"]) >= cutoff]
+        if user_filter:
+            logs = [log for log in logs if log["user_id"] == user_filter]
+
+        dau = len(set(log["user_id"] for log in logs if (datetime.utcnow() - parser.parse(log["timestamp"])) < timedelta(days=1)))
+        wau = len(set(log["user_id"] for log in logs if (datetime.utcnow() - parser.parse(log["timestamp"])) < timedelta(days=7)))
+        mau = len(set(log["user_id"] for log in logs if (datetime.utcnow() - parser.parse(log["timestamp"])) < timedelta(days=30)))
+
+        hours = [parser.parse(log["timestamp"]).hour for log in logs]
+        peak_hour = Counter(hours).most_common(1)[0][0] if hours else "N/A"
+
+        users = Counter(log["user_id"] for log in logs)
+        locations = Counter(log["location"] for log in logs)
+        inputs = Counter(log["input"] for log in logs)
+
+        html = f"""
+        <html><head><title>Droxion Dashboard</title></head><body style='background:black;color:white;font-family:sans-serif'>
+        <h2>📊 Droxion Dashboard</h2>
+        <p>DAU: {dau} | WAU: {wau} | MAU: {mau}</p>
+        <p>Peak usage hour: {peak_hour}:00</p>
+        <p>Top Users: {dict(users)}</p>
+        <p>Top Locations: {dict(locations)}</p>
+        <p>Top Inputs: {dict(inputs)}</p>
+        <p><small>Filter: ?token=yourtoken&days=7&user=yourid</small></p>
+        <h3>User Activity Logs</h3>
+        <table border='1' cellpadding='4' cellspacing='0' style='color:white'>
+            <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
+        """
+        for log in logs[-100:][::-1]:
+            html += f"<tr><td>{log['timestamp']}</td><td>{log['user_id']}</td><td>{log['action']}</td><td>{log['input']}</td><td>{log['ip']}</td><td>{log.get('location','')}</td></tr>"
+
+        html += "</table></body></html>"
+        return html
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
