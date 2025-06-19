@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, Response, render_template_string
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -6,9 +6,10 @@ import requests
 import base64
 import time
 import json
+from collections import Counter
 from datetime import datetime, timedelta
 from dateutil import parser
-from collections import Counter
+from pytz import utc
 
 load_dotenv()
 
@@ -21,6 +22,7 @@ CORS(app, supports_credentials=True, origins=[
 ])
 
 LOG_FILE = "user_logs.json"
+ALLOWED_TOKENS = ["droxion2025"]
 
 @app.route("/")
 def home():
@@ -33,28 +35,13 @@ def chat():
         prompt = data.get("prompt", "").strip().lower()
         video_mode = data.get("videoMode", False)
         voice_mode = data.get("voiceMode", False)
-        user_id = data.get("user_id", "anonymous")
-        ip = request.headers.get("X-Forwarded-For", request.remote_addr)
-        location = get_location_from_ip(ip)
+        user_id = data.get("userId", "anonymous")
+        user_ip = request.remote_addr
+
+        log_action(user_id, "message", prompt, user_ip)
 
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
-
-        log_user_action(user_id, "message", prompt, ip, location)
-
-        if "tarak mehta video" in prompt or "youtube" in prompt:
-            return jsonify({
-                "reply": '<iframe width="100%" height="315" src="https://www.youtube.com/embed/tgbNymZ7vqY" frameborder="0" allowfullscreen></iframe>',
-                "videoMode": video_mode,
-                "voiceMode": voice_mode
-            })
-
-        if "car image" in prompt or "image create" in prompt:
-            return jsonify({
-                "reply": '<img src="https://source.unsplash.com/600x400/?car" alt="Car Image" />',
-                "videoMode": video_mode,
-                "voiceMode": voice_mode
-            })
 
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
@@ -62,10 +49,7 @@ def chat():
         }
 
         messages = [
-            {
-                "role": "system",
-                "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™. If someone asks 'who made you', reply with that."
-            },
+            {"role": "system", "content": "You are an AI assistant created by Dhruv Patel and powered by Droxion™."},
             {"role": "user", "content": prompt}
         ]
 
@@ -154,25 +138,11 @@ def search_youtube():
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
-@app.route("/logs")
-def view_logs():
-    token = request.args.get("token")
-    if token != os.getenv("ADMIN_TOKEN"):
-        return "❌ Unauthorized", 403
-
-    try:
-        with open(LOG_FILE, "r") as f:
-            logs = json.load(f)
-    except:
-        logs = []
-
-    return jsonify(logs)
-
 @app.route("/dashboard")
 def dashboard():
-    token = request.args.get("token")
-    if token != os.getenv("ADMIN_TOKEN"):
-        return "❌ Unauthorized", 403
+    token = request.args.get("token", "")
+    if token not in ALLOWED_TOKENS:
+        return Response("❌ Unauthorized", status=401)
 
     try:
         with open(LOG_FILE, "r") as f:
@@ -180,38 +150,91 @@ def dashboard():
     except:
         logs = []
 
-    return send_file("dashboard.html")
+    now = datetime.utcnow().replace(tzinfo=utc)
+    dau_cutoff = now - timedelta(days=1)
+    wau_cutoff = now - timedelta(weeks=1)
+    mau_cutoff = now - timedelta(days=30)
 
-def log_user_action(user_id, action, input_text, ip, location):
-    log_entry = {
+    daus = set()
+    waus = set()
+    maus = set()
+    hour_counter = Counter()
+    input_counter = Counter()
+    user_counter = Counter()
+    location_counter = Counter()
+
+    rows = []
+    for entry in logs:
+        try:
+            t = parser.isoparse(entry["timestamp"])
+            uid = entry.get("user_id", "anon")
+            ip = entry.get("ip", "?")
+            loc = entry.get("location", "")
+
+            if t > dau_cutoff:
+                daus.add(uid)
+            if t > wau_cutoff:
+                waus.add(uid)
+            if t > mau_cutoff:
+                maus.add(uid)
+
+            hour_counter[t.strftime("%H:00")] += 1
+            input_counter[entry.get("input", "")] += 1
+            user_counter[uid] += 1
+            location_counter[loc] += 1
+
+            rows.append(entry)
+        except:
+            continue
+
+    html = f"""
+    <html><body style='background:#111;color:white;padding:2rem;'>
+    <h2>📊 Droxion Dashboard</h2>
+    <p>DAU: {len(daus)} | WAU: {len(waus)} | MAU: {len(maus)}</p>
+    <p>Peak usage hour: {hour_counter.most_common(1)[0][0] if hour_counter else 'N/A'}</p>
+    <p>Top Users: {dict(user_counter.most_common(3))}</p>
+    <p>Top Locations: {dict(location_counter.most_common(3))}</p>
+    <p>Top Inputs: {dict(input_counter.most_common(4))}</p>
+    <hr/>
+    <p><code>Filter: ?token=droxion2025&days=7&user=yourid</code></p>
+    <h3>User Activity Logs</h3>
+    <table border='1' cellspacing='0' cellpadding='6'>
+        <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
+    """
+
+    for r in rows[-100:][::-1]:
+        html += f"<tr><td>{r['timestamp']}</td><td>{r['user_id']}</td><td>{r['action']}</td><td>{r['input']}</td><td>{r.get('ip','')}</td><td>{r.get('location','')}</td></tr>"
+
+    html += "</table></body></html>"
+    return render_template_string(html)
+
+def log_action(user_id, action, text, ip):
+    entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "user_id": user_id,
         "action": action,
-        "input": input_text,
-        "ip": ip,
-        "location": location
+        "input": text,
+        "ip": ip
     }
 
-    logs = []
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "r") as f:
-            try:
-                logs = json.load(f)
-            except:
-                logs = []
-
-    logs.append(log_entry)
-
-    with open(LOG_FILE, "w") as f:
-        json.dump(logs, f, indent=2)
-
-def get_location_from_ip(ip):
     try:
-        res = requests.get(f"https://ipapi.co/{ip}/json/")
-        data = res.json()
-        return f"{data.get('city', '')}, {data.get('country_name', '')}"
+        geo = requests.get(f"https://ipinfo.io/{ip}/json").json()
+        city = geo.get("city", "")
+        region = geo.get("region", "")
+        country = geo.get("country", "")
+        entry["location"] = ", ".join([city, region, country]).strip(', ')
     except:
-        return ""
+        entry["location"] = ""
+
+    try:
+        with open(LOG_FILE, "r") as f:
+            data = json.load(f)
+    except:
+        data = []
+
+    data.append(entry)
+    with open(LOG_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
