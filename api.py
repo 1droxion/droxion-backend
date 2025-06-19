@@ -1,26 +1,106 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
 import requests
+import json
 import base64
 import time
-import json
 from datetime import datetime, timedelta
-from collections import Counter
+from collections import Counter, defaultdict
 from dateutil import parser
+import pytz
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=[
     "https://www.droxion.com",
+    "https://droxion.com",
     "https://droxion.vercel.app",
     "http://localhost:5173"
 ])
 
 LOG_FILE = "user_logs.json"
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
+# --- UTILS ---
+def log_user_action(user_id, action, input_text, ip):
+    now = datetime.utcnow().isoformat() + "Z"
+    location = get_location_from_ip(ip)
+    new_entry = {
+        "timestamp": now,
+        "user_id": user_id,
+        "action": action,
+        "input": input_text,
+        "ip": ip,
+        "location": location
+    }
+    logs = []
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r") as f:
+                logs = json.load(f)
+        except:
+            logs = []
+
+    logs.append(new_entry)
+    with open(LOG_FILE, "w") as f:
+        json.dump(logs, f, indent=2)
+
+def get_location_from_ip(ip):
+    try:
+        res = requests.get(f"http://ip-api.com/json/{ip}")
+        data = res.json()
+        if data["status"] == "success":
+            return f"{data['city']}, {data['countryCode']}"
+        return ""
+    except:
+        return ""
+
+def get_client_ip():
+    return request.headers.get("X-Forwarded-For", request.remote_addr)
+
+def parse_logs(file_path, user_filter=None, days=7):
+    now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+    dau_set, wau_set, mau_set = set(), set(), set()
+    hour_count = Counter()
+    input_count = Counter()
+    user_count = Counter()
+    location_count = Counter()
+    logs = []
+
+    if os.path.exists(file_path):
+        with open(file_path) as f:
+            data = json.load(f)
+        for entry in data:
+            try:
+                ts = parser.isoparse(entry["timestamp"]).replace(tzinfo=pytz.UTC)
+                if (now - ts).days <= days:
+                    uid = entry.get("user_id", "anonymous")
+                    logs.append(entry)
+                    dau_set.add(uid)
+                    wau_set.add(uid)
+                    mau_set.add(uid)
+                    hour = ts.hour
+                    hour_count[hour] += 1
+                    input_count[entry.get("input", "").strip()] += 1
+                    user_count[uid] += 1
+                    location_count[entry.get("location", "")] += 1
+            except:
+                continue
+    return {
+        "dau": len(dau_set),
+        "wau": len(wau_set),
+        "mau": len(mau_set),
+        "peak_hour": hour_count.most_common(1)[0][0] if hour_count else 0,
+        "top_users": dict(user_count.most_common(3)),
+        "top_inputs": dict(input_count.most_common(5)),
+        "top_locations": dict(location_count.most_common(3)),
+        "logs": logs[-100:]
+    }
+
+# --- ROUTES ---
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
@@ -29,139 +109,129 @@ def home():
 def chat():
     try:
         data = request.json
-        prompt = data.get("prompt", "").strip().lower()
-        video_mode = data.get("videoMode", False)
-        voice_mode = data.get("voiceMode", False)
-        user_id = data.get("user_id", "anonymous")
-
+        prompt = data.get("prompt", "").strip()
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
 
-        # Log the message
-        log_user_action(user_id, "message", prompt)
+        ip = get_client_ip()
+        user_id = data.get("user_id", "anonymous")
+        voice_mode = data.get("voiceMode", False)
+        video_mode = data.get("videoMode", False)
 
-        if "tarak mehta video" in prompt or "youtube" in prompt:
-            return jsonify({
-                "reply": '<iframe width="100%" height="315" src="https://www.youtube.com/embed/tgbNymZ7vqY" frameborder="0" allowfullscreen></iframe>',
-                "videoMode": video_mode,
-                "voiceMode": voice_mode
-            })
-
-        if "car image" in prompt or "image create" in prompt:
-            return jsonify({
-                "reply": '<img src="https://source.unsplash.com/600x400/?car" alt="Car Image" />',
-                "videoMode": video_mode,
-                "voiceMode": voice_mode
-            })
+        log_user_action(user_id, "message", prompt, ip)
 
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
             "Content-Type": "application/json"
         }
-        messages = [
-            {"role": "system", "content": "You are an assistant created by Dhruv Patel, named Droxion."},
-            {"role": "user", "content": prompt}
-        ]
-        payload = {"model": "gpt-4", "messages": messages}
+
+        payload = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "You are Droxion AI Assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        }
+
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
-
-        return jsonify({"reply": reply, "videoMode": video_mode, "voiceMode": voice_mode})
+        return jsonify({
+            "reply": reply,
+            "voiceMode": voice_mode,
+            "videoMode": video_mode
+        })
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
-@app.route("/track", methods=["POST"])
-def track():
+@app.route("/generate-image", methods=["POST"])
+def generate_image():
     try:
-        data = request.json
-        user_id = data.get("user_id", "anonymous")
-        action = data.get("action", "unknown")
-        input_text = data.get("input", "")
-        ip = request.remote_addr or "unknown"
-        location = ""
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
 
-        try:
-            loc_res = requests.get(f"https://ipapi.co/{ip}/country_name/")
-            if loc_res.status_code == 200:
-                location = loc_res.text.strip()
-        except:
-            location = ""
-
-        log_entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "user_id": user_id,
-            "action": action,
-            "input": input_text,
-            "ip": ip,
-            "location": location
+        headers = {
+            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+            "Content-Type": "application/json"
         }
 
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, "r") as f:
-                logs = json.load(f)
-        else:
-            logs = []
+        payload = {
+            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+            "input": {
+                "prompt": prompt,
+                "width": 768,
+                "height": 768
+            }
+        }
 
-        logs.append(log_entry)
-        with open(LOG_FILE, "w") as f:
-            json.dump(logs, f)
+        r = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
+        poll_url = r["urls"]["get"]
 
-        return jsonify({"status": "ok"})
+        while True:
+            poll = requests.get(poll_url, headers=headers).json()
+            if poll["status"] == "succeeded":
+                return jsonify({"image_url": poll["output"]})
+            elif poll["status"] == "failed":
+                return jsonify({"error": "Image generation failed"}), 500
+            time.sleep(1)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Image error: {str(e)}"}), 500
+
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    try:
+        prompt = request.json.get("prompt", "")
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": prompt,
+            "type": "video",
+            "maxResults": 1,
+            "key": os.getenv("YOUTUBE_API_KEY")
+        }
+        res = requests.get(url, params=params).json()
+        item = res["items"][0]
+        video_id = item["id"]["videoId"]
+        return jsonify({
+            "title": item["snippet"]["title"],
+            "url": f"https://www.youtube.com/watch?v={video_id}"
+        })
+    except Exception as e:
+        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
 @app.route("/dashboard")
 def dashboard():
-    try:
-        token = request.args.get("token")
-        if token != os.getenv("ADMIN_TOKEN"):
-            return "<h1>❌ Unauthorized</h1>", 403
+    token = request.args.get("token", "")
+    if token != ADMIN_TOKEN:
+        return "❌ Unauthorized", 401
+    user_filter = request.args.get("user")
+    days = int(request.args.get("days", 7))
+    stats = parse_logs(LOG_FILE, user_filter, days)
 
-        user_filter = request.args.get("user")
-        days = int(request.args.get("days", 7))
-        cutoff = datetime.utcnow() - timedelta(days=days)
-
-        if not os.path.exists(LOG_FILE):
-            return "No data"
-
-        with open(LOG_FILE, "r") as f:
-            logs = json.load(f)
-
-        logs = [log for log in logs if parser.parse(log["timestamp"]) >= cutoff]
-        if user_filter:
-            logs = [log for log in logs if log["user_id"] == user_filter]
-
-        dau = len(set(log["user_id"] for log in logs if (datetime.utcnow() - parser.parse(log["timestamp"])) < timedelta(days=1)))
-        wau = len(set(log["user_id"] for log in logs if (datetime.utcnow() - parser.parse(log["timestamp"])) < timedelta(days=7)))
-        mau = len(set(log["user_id"] for log in logs if (datetime.utcnow() - parser.parse(log["timestamp"])) < timedelta(days=30)))
-
-        hours = [parser.parse(log["timestamp"]).hour for log in logs]
-        peak_hour = Counter(hours).most_common(1)[0][0] if hours else "N/A"
-
-        users = Counter(log["user_id"] for log in logs)
-        locations = Counter(log["location"] for log in logs)
-        inputs = Counter(log["input"] for log in logs)
-
-        html = f"""
-        <html><head><title>Droxion Dashboard</title></head><body style='background:black;color:white;font-family:sans-serif'>
-        <h2>📊 Droxion Dashboard</h2>
-        <p>DAU: {dau} | WAU: {wau} | MAU: {mau}</p>
-        <p>Peak usage hour: {peak_hour}:00</p>
-        <p>Top Users: {dict(users)}</p>
-        <p>Top Locations: {dict(locations)}</p>
-        <p>Top Inputs: {dict(inputs)}</p>
-        <p><small>Filter: ?token=yourtoken&days=7&user=yourid</small></p>
-        <h3>User Activity Logs</h3>
-        <table border='1' cellpadding='4' cellspacing='0' style='color:white'>
-            <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
-        """
-        for log in logs[-100:][::-1]:
-            html += f"<tr><td>{log['timestamp']}</td><td>{log['user_id']}</td><td>{log['action']}</td><td>{log['input']}</td><td>{log['ip']}</td><td>{log.get('location','')}</td></tr>"
-
-        html += "</table></body></html>"
-        return html
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    html = """
+    <h2>📊 Droxion Dashboard</h2>
+    <div>DAU: {{stats['dau']}} | WAU: {{stats['wau']}} | MAU: {{stats['mau']}}</div>
+    <div>Peak Hour: {{stats['peak_hour']}}</div>
+    <div>Top Users: {{stats['top_users']}}</div>
+    <div>Top Inputs: {{stats['top_inputs']}}</div>
+    <div>Top Locations: {{stats['top_locations']}}</div>
+    <hr>
+    <h4>User Activity Logs</h4>
+    <table border="1" cellpadding="5">
+        <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
+        {% for log in stats['logs'] %}
+        <tr>
+            <td>{{log["timestamp"]}}</td>
+            <td>{{log["user_id"]}}</td>
+            <td>{{log["action"]}}</td>
+            <td>{{log["input"]}}</td>
+            <td>{{log["ip"]}}</td>
+            <td>{{log["location"]}}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    """
+    return render_template_string(html, stats=stats)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
