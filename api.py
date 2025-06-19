@@ -5,6 +5,8 @@ import os
 import requests
 import base64
 import time
+import json
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -15,6 +17,8 @@ CORS(app, supports_credentials=True, origins=[
     "https://droxion.vercel.app",
     "http://localhost:5173"
 ])
+
+LOG_FILE = "user_logs.json"
 
 @app.route("/")
 def home():
@@ -185,6 +189,66 @@ def search_youtube():
         })
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
+
+@app.route("/track", methods=["POST"])
+def track():
+    try:
+        data = request.json
+        user_id = data.get("user_id")
+        action = data.get("action")
+        input_text = data.get("input")
+        timestamp = data.get("timestamp", datetime.utcnow().isoformat())
+
+        if not user_id or not action:
+            return jsonify({"error": "Missing user_id or action."}), 400
+
+        log = {"user_id": user_id, "action": action, "input": input_text, "timestamp": timestamp}
+
+        if not os.path.exists(LOG_FILE):
+            with open(LOG_FILE, "w") as f:
+                json.dump([log], f, indent=2)
+        else:
+            with open(LOG_FILE, "r+") as f:
+                logs = json.load(f)
+                logs.append(log)
+                f.seek(0)
+                json.dump(logs, f, indent=2)
+
+        return jsonify({"status": "logged"})
+    except Exception as e:
+        return jsonify({"error": f"Tracking error: {str(e)}"}), 500
+
+@app.route("/stats", methods=["GET"])
+def stats():
+    try:
+        if not os.path.exists(LOG_FILE):
+            return jsonify({"dau": 0, "wau": 0, "mau": 0})
+
+        with open(LOG_FILE, "r") as f:
+            logs = json.load(f)
+
+        now = datetime.utcnow()
+        users_1d = set()
+        users_7d = set()
+        users_30d = set()
+
+        for log in logs:
+            t = datetime.fromisoformat(log["timestamp"])
+            uid = log["user_id"]
+            if now - t <= timedelta(days=1):
+                users_1d.add(uid)
+            if now - t <= timedelta(days=7):
+                users_7d.add(uid)
+            if now - t <= timedelta(days=30):
+                users_30d.add(uid)
+
+        return jsonify({
+            "dau": len(users_1d),
+            "wau": len(users_7d),
+            "mau": len(users_30d)
+        })
+    except Exception as e:
+        return jsonify({"error": f"Stats error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
