@@ -203,9 +203,67 @@ def search_youtube():
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
-# style-photo route is in a separate module above
-from backend_style_photo import style_photo
-app.add_url_rule("/style-photo", view_func=style_photo, methods=["POST"])
+@app.route("/style-photo", methods=["POST"])
+def style_photo():
+    try:
+        image_file = request.files.get("file")
+        prompt = request.form.get("prompt", "").strip()
+        style = request.form.get("style", "Pixar").strip()
+
+        if not image_file:
+            return jsonify({"error": "Missing image file"}), 400
+        if not prompt:
+            return jsonify({"error": "Missing prompt"}), 400
+
+        imgbb_key = os.getenv("IMGBB_API_KEY")
+        if not imgbb_key:
+            return jsonify({"error": "Missing IMGBB_API_KEY"}), 500
+
+        replicate_token = os.getenv("REPLICATE_API_TOKEN")
+        if not replicate_token:
+            return jsonify({"error": "Missing REPLICATE_API_TOKEN"}), 500
+
+        headers = {
+            "Authorization": f"Token {replicate_token}",
+            "Content-Type": "application/json"
+        }
+
+        upload = requests.post(
+            "https://api.imgbb.com/1/upload",
+            params={"key": imgbb_key},
+            files={"image": image_file}
+        ).json()
+
+        if "data" not in upload or "url" not in upload["data"]:
+            return jsonify({"error": "Failed to upload image"}), 500
+
+        image_url = upload["data"]["url"]
+
+        payload = {
+            "version": "a20f088c2aa35e26cf78fc7fc87b2c7a57684a8a797237c6e9bc9fc81f9f010e",
+            "input": {
+                "image": image_url,
+                "prompt": f"{prompt}, style {style}"
+            }
+        }
+
+        res = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
+
+        if "urls" not in res or "get" not in res["urls"]:
+            return jsonify({"error": "Replicate API did not respond properly"}), 500
+
+        poll_url = res["urls"]["get"]
+
+        while True:
+            poll = requests.get(poll_url, headers=headers).json()
+            if poll["status"] == "succeeded":
+                return jsonify({"image_url": poll["output"]})
+            elif poll["status"] == "failed":
+                return jsonify({"error": "Image styling failed"}), 500
+            time.sleep(1)
+
+    except Exception as e:
+        return jsonify({"error": f"Style Photo error: {str(e)}"}), 500
 
 @app.route("/dashboard")
 def dashboard():
