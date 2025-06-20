@@ -30,7 +30,9 @@ def handle_options(path):
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     return response
 
-# ... other routes remain the same ...
+@app.route("/")
+def home():
+    return "✅ Droxion API is live."
 
 @app.route("/style-photo", methods=["POST"])
 def style_photo():
@@ -52,11 +54,6 @@ def style_photo():
         if not replicate_token:
             return jsonify({"error": "Missing REPLICATE_API_TOKEN"}), 500
 
-        headers = {
-            "Authorization": f"Token {replicate_token}",
-            "Content-Type": "application/json"
-        }
-
         upload = requests.post(
             "https://api.imgbb.com/1/upload",
             params={"key": imgbb_key},
@@ -64,15 +61,19 @@ def style_photo():
         ).json()
 
         print("ImgBB Upload Response:", upload)
-
         if "data" not in upload or "url" not in upload["data"]:
-            return jsonify({"error": "Failed to upload image"}), 500
+            return jsonify({"error": "Failed to upload image to ImgBB"}), 500
 
         image_url = upload["data"]["url"]
         print("Uploaded Image URL:", image_url)
 
+        headers = {
+            "Authorization": f"Token {replicate_token}",
+            "Content-Type": "application/json"
+        }
+
         payload = {
-            "version": "a20f088c2aa35e26cf78fc7fc87b2c7a57684a8a797237c6e9bc9fc81f9f010e",
+            "version": "e1f9a3c078b2e1f1e503b964f88d23bb75e3c4f0f3318b9a5e9ee3b8c2a2239e",
             "input": {
                 "image": image_url,
                 "prompt": f"{prompt}, style {style}"
@@ -80,26 +81,24 @@ def style_photo():
         }
 
         res = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
-        print("Replicate API Response:", res)
+        print("Replicate Response:", res)
 
         if "urls" not in res or "get" not in res["urls"]:
-            return jsonify({"error": "Replicate API did not respond properly", "details": res}), 500
+            return jsonify({"error": "Replicate API failed", "details": res}), 500
 
         poll_url = res["urls"]["get"]
 
         while True:
             poll = requests.get(poll_url, headers=headers).json()
-            print("Polling Response:", poll)
+            print("Polling:", poll)
             if poll["status"] == "succeeded":
                 return jsonify({"image_url": poll["output"]})
             elif poll["status"] == "failed":
-                return jsonify({"error": "Image styling failed", "details": poll}), 500
+                return jsonify({"error": "Image generation failed", "details": poll}), 500
             time.sleep(1)
 
     except Exception as e:
         return jsonify({"error": f"Style Photo error: {str(e)}"}), 500
-
-# ... rest of the code remains unchanged ...
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
