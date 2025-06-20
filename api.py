@@ -34,6 +34,97 @@ def handle_options(path):
 def home():
     return "✅ Droxion API is live."
 
+@app.route("/chat", methods=["POST"])
+def chat():
+    try:
+        data = request.json
+        prompt = data.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"reply": "❗ Prompt is required."}), 400
+
+        user_id = data.get("user_id", "anonymous")
+        voice_mode = data.get("voiceMode", False)
+        video_mode = data.get("videoMode", False)
+
+        headers = {
+            "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "You are Droxion AI Assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        }
+
+        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+        reply = res.json()["choices"][0]["message"]["content"]
+        return jsonify({
+            "reply": reply,
+            "voiceMode": voice_mode,
+            "videoMode": video_mode
+        })
+    except Exception as e:
+        return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+
+@app.route("/generate-image", methods=["POST"])
+def generate_image():
+    try:
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
+
+        headers = {
+            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+            "input": {
+                "prompt": prompt,
+                "width": 768,
+                "height": 768
+            }
+        }
+
+        r = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
+        poll_url = r["urls"]["get"]
+
+        while True:
+            poll = requests.get(poll_url, headers=headers).json()
+            if poll["status"] == "succeeded":
+                return jsonify({"image_url": poll["output"]})
+            elif poll["status"] == "failed":
+                return jsonify({"error": "Image generation failed"}), 500
+            time.sleep(1)
+    except Exception as e:
+        return jsonify({"error": f"Image error: {str(e)}"}), 500
+
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    try:
+        prompt = request.json.get("prompt", "")
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": prompt,
+            "type": "video",
+            "maxResults": 1,
+            "key": os.getenv("YOUTUBE_API_KEY")
+        }
+        res = requests.get(url, params=params).json()
+        item = res["items"][0]
+        video_id = item["id"]["videoId"]
+        return jsonify({
+            "title": item["snippet"]["title"],
+            "url": f"https://www.youtube.com/watch?v={video_id}"
+        })
+    except Exception as e:
+        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
+
 @app.route("/style-photo", methods=["POST"])
 def style_photo():
     try:
