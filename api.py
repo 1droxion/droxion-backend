@@ -206,14 +206,21 @@ def search_youtube():
 @app.route("/style-photo", methods=["POST"])
 def style_photo():
     try:
-        image_file = request.files.get("image")
+        image_file = request.files.get("file")
         prompt = request.form.get("prompt", "")
         style = request.form.get("style", "Pixar")
 
         if not image_file or not prompt:
             return jsonify({"error": "Missing image or prompt"}), 400
 
+        imgbb_key = os.getenv("IMGBB_API_KEY")
+        if not imgbb_key:
+            raise Exception("IMGBB_API_KEY is missing")
+
         replicate_token = os.getenv("REPLICATE_API_TOKEN")
+        if not replicate_token:
+            raise Exception("REPLICATE_API_TOKEN is missing")
+
         headers = {
             "Authorization": f"Token {replicate_token}",
             "Content-Type": "application/json"
@@ -221,9 +228,12 @@ def style_photo():
 
         upload = requests.post(
             "https://api.imgbb.com/1/upload",
-            params={"key": os.getenv("IMGBB_API_KEY")},
+            params={"key": imgbb_key},
             files={"image": image_file}
         ).json()
+
+        if "data" not in upload or "url" not in upload["data"]:
+            return jsonify({"error": "Failed to upload to ImgBB"}), 500
 
         image_url = upload["data"]["url"]
 
@@ -236,6 +246,10 @@ def style_photo():
         }
 
         res = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
+
+        if "urls" not in res or "get" not in res["urls"]:
+            return jsonify({"error": "Replicate failed to start"}), 500
+
         poll_url = res["urls"]["get"]
 
         while True:
