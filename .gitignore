@@ -1,3 +1,33 @@
-.env
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Environment variables and secret keys
+.env
+
+# Logs and user data
+user_logs.json
+
+# MacOS / Windows
+.DS_Store
+Thumbs.db
+
+# VSCode / PyCharm / JetBrains
+.vscode/
+.idea/
+
+# Virtual environment
+venv/
+.env/
+.venv/
+
+# Flask cache
+instance/
+*.db
+
+# PIP dependency logs
+pip-log.txt
+
+# Compiled binary
+*.so
