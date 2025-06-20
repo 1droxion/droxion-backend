@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, render_template_string, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
-import os, requests, json, time, traceback
+import os, requests, json, time, traceback, sys
 from datetime import datetime
 from collections import Counter
 from dateutil import parser
@@ -60,13 +60,13 @@ def style_photo():
             files={"image": image_file}
         ).json()
 
-        print("[IMGBB Upload Response]", upload)
+        print("[IMGBB Upload Response]", upload, file=sys.stdout, flush=True)
 
         if "data" not in upload or "url" not in upload["data"]:
             return jsonify({"error": "Image upload failed", "details": upload}), 500
 
         image_url = upload["data"]["url"]
-        print("[Uploaded Image URL]", image_url)
+        print("[Uploaded Image URL]", image_url, file=sys.stdout, flush=True)
 
         headers = {
             "Authorization": f"Token {replicate_token}",
@@ -84,7 +84,7 @@ def style_photo():
         }
 
         response = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
-        print("[Replicate API Response]", response)
+        print("[Replicate API Response]", response, file=sys.stdout, flush=True)
 
         if "urls" not in response or "get" not in response["urls"]:
             return jsonify({"error": "Replicate API failed", "details": response}), 500
@@ -93,7 +93,7 @@ def style_photo():
 
         while True:
             poll = requests.get(poll_url, headers=headers).json()
-            print("[Polling Result]", poll)
+            print("[Polling Result]", poll, file=sys.stdout, flush=True)
             if poll["status"] == "succeeded":
                 return jsonify({"image_url": poll["output"][0]})
             elif poll["status"] == "failed":
@@ -101,7 +101,7 @@ def style_photo():
             time.sleep(1)
 
     except Exception as e:
-        print("[Exception Error]", traceback.format_exc())
+        print("[Exception Error]", traceback.format_exc(), file=sys.stdout, flush=True)
         return jsonify({"error": f"Server exception: {str(e)}"}), 500
 
 if __name__ == "__main__":
