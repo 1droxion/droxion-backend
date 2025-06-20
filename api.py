@@ -15,7 +15,6 @@ CORS(app, origins="*", supports_credentials=True)
 LOG_FILE = "user_logs.json"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
-# === MANUAL CORS HEADER FIX ===
 @app.after_request
 def add_cors_headers(response):
     response.headers.add("Access-Control-Allow-Origin", "*")
@@ -203,6 +202,52 @@ def search_youtube():
         })
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
+
+@app.route("/style-photo", methods=["POST"])
+def style_photo():
+    try:
+        image_file = request.files.get("image")
+        prompt = request.form.get("prompt", "")
+        style = request.form.get("style", "Pixar")
+
+        if not image_file or not prompt:
+            return jsonify({"error": "Missing image or prompt"}), 400
+
+        replicate_token = os.getenv("REPLICATE_API_TOKEN")
+        headers = {
+            "Authorization": f"Token {replicate_token}",
+            "Content-Type": "application/json"
+        }
+
+        upload = requests.post(
+            "https://api.imgbb.com/1/upload",
+            params={"key": os.getenv("IMGBB_API_KEY")},
+            files={"image": image_file}
+        ).json()
+
+        image_url = upload["data"]["url"]
+
+        payload = {
+            "version": "a20f088c2aa35e26cf78fc7fc87b2c7a57684a8a797237c6e9bc9fc81f9f010e",
+            "input": {
+                "image": image_url,
+                "prompt": f"{prompt}, style {style}"
+            }
+        }
+
+        res = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
+        poll_url = res["urls"]["get"]
+
+        while True:
+            poll = requests.get(poll_url, headers=headers).json()
+            if poll["status"] == "succeeded":
+                return jsonify({"image_url": poll["output"]})
+            elif poll["status"] == "failed":
+                return jsonify({"error": "Image styling failed"}), 500
+            time.sleep(1)
+
+    except Exception as e:
+        return jsonify({"error": f"Style Photo error: {str(e)}"}), 500
 
 @app.route("/dashboard")
 def dashboard():
