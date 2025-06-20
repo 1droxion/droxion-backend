@@ -47,12 +47,10 @@ def style_photo():
             return jsonify({"error": "Missing prompt"}), 400
 
         imgbb_key = os.getenv("IMGBB_API_KEY")
-        if not imgbb_key:
-            return jsonify({"error": "Missing IMGBB_API_KEY"}), 500
-
         replicate_token = os.getenv("REPLICATE_API_TOKEN")
-        if not replicate_token:
-            return jsonify({"error": "Missing REPLICATE_API_TOKEN"}), 500
+
+        if not imgbb_key or not replicate_token:
+            return jsonify({"error": "Missing API keys"}), 500
 
         upload = requests.post(
             "https://api.imgbb.com/1/upload",
@@ -60,12 +58,10 @@ def style_photo():
             files={"image": image_file}
         ).json()
 
-        print("ImgBB Upload Response:", upload)
         if "data" not in upload or "url" not in upload["data"]:
-            return jsonify({"error": "Failed to upload image to ImgBB"}), 500
+            return jsonify({"error": "Image upload failed", "details": upload}), 500
 
         image_url = upload["data"]["url"]
-        print("Uploaded Image URL:", image_url)
 
         headers = {
             "Authorization": f"Token {replicate_token}",
@@ -73,32 +69,31 @@ def style_photo():
         }
 
         payload = {
-            "version": "e1f9a3c078b2e1f1e503b964f88d23bb75e3c4f0f3318b9a5e9ee3b8c2a2239e",
+            "version": "db21e45bfa89e5bb1e0e0047c8e5d5a905c91265cfb3ba78f80b6a0cad16c173",
             "input": {
+                "prompt": f"{prompt}, {style}, portrait, 4k, ultra realistic",
                 "image": image_url,
-                "prompt": f"{prompt}, style {style}"
+                "strength": 0.5,
+                "guidance_scale": 7.5
             }
         }
 
-        res = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
-        print("Replicate Response:", res)
+        response = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
+        if "urls" not in response or "get" not in response["urls"]:
+            return jsonify({"error": "Replicate API failed", "details": response}), 500
 
-        if "urls" not in res or "get" not in res["urls"]:
-            return jsonify({"error": "Replicate API failed", "details": res}), 500
-
-        poll_url = res["urls"]["get"]
+        poll_url = response["urls"]["get"]
 
         while True:
             poll = requests.get(poll_url, headers=headers).json()
-            print("Polling:", poll)
             if poll["status"] == "succeeded":
-                return jsonify({"image_url": poll["output"]})
+                return jsonify({"image_url": poll["output"][0]})
             elif poll["status"] == "failed":
                 return jsonify({"error": "Image generation failed", "details": poll}), 500
             time.sleep(1)
 
     except Exception as e:
-        return jsonify({"error": f"Style Photo error: {str(e)}"}), 500
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
