@@ -49,12 +49,16 @@ def chat():
 
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         response_data = res.json()
-        reply = response_data["choices"][0]["message"]["content"]
 
+        if "choices" not in response_data:
+            return jsonify({"reply": f"❌ OpenAI Error: {response_data.get('error', {}).get('message', 'No response')}"}), 500
+
+        reply = response_data["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
+
     except Exception as e:
         print("[Chat Error]", traceback.format_exc(), file=sys.stdout, flush=True)
-        return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+        return jsonify({"reply": f"❌ Server Error: {str(e)}"}), 500
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
@@ -77,6 +81,41 @@ def search_youtube():
         })
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
+
+@app.route("/generate-image", methods=["POST"])
+def generate_image():
+    try:
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
+
+        headers = {
+            "Authorization": f"Token {REPLICATE_API_TOKEN}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+            "input": {
+                "prompt": prompt,
+                "width": 768,
+                "height": 768
+            }
+        }
+
+        r = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
+        poll_url = r["urls"]["get"]
+
+        while True:
+            poll = requests.get(poll_url, headers=headers).json()
+            if poll["status"] == "succeeded":
+                return jsonify({"image_url": poll["output"]})
+            elif poll["status"] == "failed":
+                return jsonify({"error": "Image generation failed"}), 500
+            time.sleep(1)
+
+    except Exception as e:
+        return jsonify({"error": f"Image error: {str(e)}"}), 500
 
 @app.route("/style-photo", methods=["POST"])
 def style_photo():
