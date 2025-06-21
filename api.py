@@ -60,6 +60,7 @@ def chat():
 
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         response_data = res.json()
+        print("OpenAI Response:", response_data)  # Debug log
 
         if "choices" not in response_data:
             return jsonify({"reply": f"\u274C OpenAI error: {response_data}"}), 500
@@ -136,7 +137,6 @@ def style_photo():
     except Exception as e:
         return jsonify({"error": f"Style Photo error: {str(e)}"}), 500
 
-# ✅ NEW: Generate image directly from prompt
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -168,6 +168,22 @@ def generate_image():
 
     except Exception as e:
         return jsonify({"error": f"Image API error: {str(e)}"}), 500
+
+@app.route("/track", methods=["POST"])
+def track():
+    try:
+        data = request.get_json()
+        log = {
+            "user_id": data.get("user_id"),
+            "action": data.get("action"),
+            "input": data.get("input"),
+            "timestamp": data.get("timestamp")
+        }
+        with open(LOG_FILE, "a") as f:
+            f.write(json.dumps(log) + "\n")
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        return jsonify({"error": f"Track error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
