@@ -43,7 +43,7 @@ def chat():
         data = request.json
         prompt = data.get("prompt", "").strip()
         if not prompt:
-            return jsonify({"reply": "\u2757 Prompt is required."}), 400
+            return jsonify({"reply": "❗ Prompt is required."}), 400
 
         headers = {
             "Authorization": f"Bearer {os.getenv('ROUTER_KEY')}",
@@ -60,15 +60,15 @@ def chat():
 
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         response_data = res.json()
-        print("OpenAI Response:", response_data)  # Debug log
+        print("🔍 ROUTER_KEY Chat API Response:", json.dumps(response_data, indent=2))  # ✅ Debug log
 
         if "choices" not in response_data:
-            return jsonify({"reply": f"\u274C OpenAI error: {response_data}"}), 500
+            return jsonify({"reply": f"❌ OpenAI error: {response_data.get('error', {}).get('message', 'No choices in response')}"}), 500
 
         reply = response_data["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"\u274C Error: {str(e)}"}), 500
+        return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
