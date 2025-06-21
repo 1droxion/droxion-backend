@@ -1,12 +1,6 @@
 flask
-flask-cors[regex]
-openai
-elevenlabs
-pexels_api
-requests
-python-dotenv
-gunicorn
+diffusers
+transformers
+torch
+pillow
 moviepy
-python-dateutil
-pytz
-ipinfo
