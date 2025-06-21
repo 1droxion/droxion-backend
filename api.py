@@ -4,7 +4,7 @@ import subprocess
 import os
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend connection
+CORS(app, origins=["https://www.droxion.com"])  # ✅ allow frontend domain
 
 @app.route("/generate", methods=["POST"])
 def generate_video():
