@@ -3,6 +3,9 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import os, requests, json, time, traceback, sys
 from datetime import datetime
+from collections import Counter
+from dateutil import parser
+import pytz
 
 load_dotenv()
 
@@ -14,6 +17,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 IMGBB_API_KEY = os.getenv("IMGBB_API_KEY")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+LOG_FILE = "user_logs.json"
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
 @app.after_request
 def add_cors_headers(response):
@@ -59,6 +64,81 @@ def chat():
     except Exception as e:
         print("[Chat Error]", traceback.format_exc(), file=sys.stdout, flush=True)
         return jsonify({"reply": f"❌ Server Error: {str(e)}"}), 500
+
+@app.route("/track", methods=["POST"])
+def track():
+    try:
+        data = request.json
+        user_id = data.get("user_id", "anonymous")
+        action = data.get("action", "")
+        input_text = data.get("input", "")
+        now = datetime.utcnow().isoformat() + "Z"
+
+        log_entry = {
+            "timestamp": now,
+            "user_id": user_id,
+            "action": action,
+            "input": input_text,
+            "ip": request.remote_addr
+        }
+
+        logs = []
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE) as f:
+                logs = json.load(f)
+
+        logs.append(log_entry)
+        with open(LOG_FILE, "w") as f:
+            json.dump(logs, f, indent=2)
+
+        return jsonify({"status": "logged"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/dashboard")
+def dashboard():
+    token = request.args.get("token", "")
+    if token != ADMIN_TOKEN:
+        return "❌ Unauthorized", 401
+
+    now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+    dau, wau, mau = set(), set(), set()
+    logs = []
+
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE) as f:
+            data = json.load(f)
+            for entry in data:
+                try:
+                    ts = parser.isoparse(entry["timestamp"]).replace(tzinfo=pytz.UTC)
+                    uid = entry.get("user_id", "anonymous")
+                    if (now - ts).days <= 1:
+                        dau.add(uid)
+                    if (now - ts).days <= 7:
+                        wau.add(uid)
+                    if (now - ts).days <= 30:
+                        mau.add(uid)
+                    logs.append(entry)
+                except:
+                    continue
+
+    html = f"""
+    <style>
+        body {{ background:#000; color:#fff; font-family:Arial; padding:20px; }}
+        h2 {{ color:#0ff; }}
+        table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
+        th, td {{ border: 1px solid #444; padding: 8px; text-align: left; }}
+        th {{ background-color: #222; }}
+        tr:nth-child(even) {{ background-color: #111; }}
+    </style>
+    <h2>📊 Droxion Dashboard</h2>
+    <p>DAU: {len(dau)} | WAU: {len(wau)} | MAU: {len(mau)}</p>
+    <table>
+        <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th></tr>
+        {''.join(f'<tr><td>{log['timestamp']}</td><td>{log['user_id']}</td><td>{log['action']}</td><td>{log['input']}</td><td>{log['ip']}</td></tr>' for log in logs[-100:])}
+    </table>
+    """
+    return render_template_string(html)
 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
