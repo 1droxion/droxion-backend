@@ -74,12 +74,10 @@ def style_photo():
         }
 
         payload = {
-            "version": "db21e45bfa89e5bb1e0e0047c8e5d5a905c91265cfb3ba78f80b6a0cad16c173",
+            "version": "8ef2637dcd8b451b7f6f12e423d5a551d13a6501503681c60236e2c1825f3d10",
             "input": {
-                "prompt": f"{prompt}, {style}, portrait, ultra detailed, 4k",
                 "image": image_url,
-                "strength": 0.5,
-                "guidance_scale": 7.5
+                "prompt": f"{prompt}, {style}"
             }
         }
 
