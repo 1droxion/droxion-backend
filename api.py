@@ -136,5 +136,38 @@ def style_photo():
     except Exception as e:
         return jsonify({"error": f"Style Photo error: {str(e)}"}), 500
 
+# ✅ NEW: Generate image directly from prompt
+@app.route("/generate-image", methods=["POST"])
+def generate_image():
+    try:
+        data = request.get_json()
+        prompt = data.get("prompt", "")
+        if not prompt:
+            return jsonify({"error": "Prompt required"}), 400
+
+        headers = {
+            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "version": "8ef2637dcd8b451b7f6f12e423d5a551d13a6501503681c60236e2c1825f3d10",
+            "input": {"prompt": prompt}
+        }
+
+        response = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
+        poll_url = response["urls"]["get"]
+
+        while True:
+            poll = requests.get(poll_url, headers=headers).json()
+            if poll["status"] == "succeeded":
+                return jsonify({"image_url": poll["output"][0]})
+            elif poll["status"] == "failed":
+                return jsonify({"error": "Image generation failed"}), 500
+            time.sleep(1)
+
+    except Exception as e:
+        return jsonify({"error": f"Image API error: {str(e)}"}), 500
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
