@@ -1,19 +1,19 @@
-from flask import Flask, request, jsonify, render_template_string, make_response
+from flask import Flask, request, jsonify, make_response, render_template_string
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os, requests, json, time, traceback, sys
 from datetime import datetime
-from collections import Counter
-from dateutil import parser
-import pytz
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app, origins="*", supports_credentials=True)
 
-LOG_FILE = "user_logs.json"
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
+ROUTER_KEY = os.getenv("ROUTER_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+IMGBB_API_KEY = os.getenv("IMGBB_API_KEY")
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 @app.after_request
 def add_cors_headers(response):
@@ -22,17 +22,61 @@ def add_cors_headers(response):
     response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
     return response
 
-@app.route("/<path:path>", methods=["OPTIONS"])
-def handle_options(path):
-    response = make_response()
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    return response
-
 @app.route("/")
 def home():
     return "✅ Droxion API is live."
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    try:
+        data = request.json
+        prompt = data.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"reply": "❗ Prompt is required."}), 400
+
+        headers = {
+            "Authorization": f"Bearer {ROUTER_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "You are Droxion AI Assistant."},
+                {"role": "user", "content": prompt}
+            ]
+        }
+
+        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+        response_data = res.json()
+        reply = response_data["choices"][0]["message"]["content"]
+
+        return jsonify({"reply": reply})
+    except Exception as e:
+        print("[Chat Error]", traceback.format_exc(), file=sys.stdout, flush=True)
+        return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    try:
+        prompt = request.json.get("prompt", "")
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": prompt,
+            "type": "video",
+            "maxResults": 1,
+            "key": YOUTUBE_API_KEY
+        }
+        res = requests.get(url, params=params).json()
+        item = res["items"][0]
+        video_id = item["id"]["videoId"]
+        return jsonify({
+            "title": item["snippet"]["title"],
+            "url": f"https://www.youtube.com/watch?v={video_id}"
+        })
+    except Exception as e:
+        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
 @app.route("/style-photo", methods=["POST"])
 def style_photo():
@@ -46,17 +90,9 @@ def style_photo():
         if not prompt:
             return jsonify({"error": "Missing prompt"}), 400
 
-        imgbb_key = os.getenv("IMGBB_API_KEY")
-        replicate_token = os.getenv("REPLICATE_API_TOKEN")
-
-        if not imgbb_key:
-            return jsonify({"error": "Missing IMGBB_API_KEY"}), 500
-        if not replicate_token:
-            return jsonify({"error": "Missing REPLICATE_API_TOKEN"}), 500
-
         upload = requests.post(
             "https://api.imgbb.com/1/upload",
-            params={"key": imgbb_key},
+            params={"key": IMGBB_API_KEY},
             files={"image": image_file}
         ).json()
 
@@ -66,10 +102,9 @@ def style_photo():
             return jsonify({"error": "Image upload failed", "details": upload}), 500
 
         image_url = upload["data"]["url"]
-        print("[Uploaded Image URL]", image_url, file=sys.stdout, flush=True)
 
         headers = {
-            "Authorization": f"Token {replicate_token}",
+            "Authorization": f"Token {REPLICATE_API_TOKEN}",
             "Content-Type": "application/json"
         }
 
@@ -99,7 +134,7 @@ def style_photo():
             time.sleep(1)
 
     except Exception as e:
-        print("[Exception Error]", traceback.format_exc(), file=sys.stdout, flush=True)
+        print("[Style Photo Error]", traceback.format_exc(), file=sys.stdout, flush=True)
         return jsonify({"error": f"Server exception: {str(e)}"}), 500
 
 if __name__ == "__main__":
