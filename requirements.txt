@@ -1,7 +1,12 @@
 flask
-flask-cors
-diffusers
-transformers
-torch
-pillow
+flask-cors[regex]
+openai
+elevenlabs
+pexels_api
+requests
+python-dotenv
+gunicorn
 moviepy
+python-dateutil
+pytz
+ipinfo
