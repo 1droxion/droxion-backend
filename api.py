@@ -15,7 +15,43 @@ CORS(app, origins="*", supports_credentials=True)
 LOG_FILE = "user_logs.json"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
-# === MANUAL CORS HEADER FIX ===
+# === Load World Knowledge ===
+with open("world_knowledge.json") as f:
+    WORLD_DATA = json.load(f)
+
+def get_world_answer(prompt):
+    q = prompt.lower()
+
+    for c, d in WORLD_DATA.get("countries", {}).items():
+        if c.lower() in q:
+            if "capital" in q:
+                return f"The capital of {c} is {d['capital']}."
+            elif "currency" in q:
+                return f"The currency of {c} is {d['currency']}."
+            elif "population" in q:
+                return f"The population of {c} is {d['population']}."
+
+    for planet, d in WORLD_DATA.get("planets", {}).items():
+        if planet.lower() in q:
+            return f"{planet} is the {d['position']} planet from the sun and is a {d['type']}."
+
+    for code, name in WORLD_DATA.get("currencies", {}).items():
+        if code.lower() in q or name.lower() in q:
+            return f"{code} stands for {name}."
+
+    for lang, regions in WORLD_DATA.get("languages", {}).items():
+        if lang.lower() in q:
+            return f"{lang} is spoken in {', '.join(regions)}."
+
+    if "ai company" in q or "top ai" in q:
+        return f"Top AI companies are: {', '.join(WORLD_DATA['tech']['top_ai_companies'])}."
+
+    if "gpt" in q:
+        return f"Available GPT models are: {', '.join(WORLD_DATA['tech']['gpt_models'])}."
+
+    return None
+
+# === Manual CORS ===
 @app.after_request
 def add_cors_headers(response):
     response.headers.add("Access-Control-Allow-Origin", "*")
@@ -124,6 +160,15 @@ def chat():
         video_mode = data.get("videoMode", False)
 
         log_user_action(user_id, "message", prompt, ip)
+
+        # 🌍 World knowledge fallback
+        world_reply = get_world_answer(prompt)
+        if world_reply:
+            return jsonify({
+                "reply": world_reply,
+                "voiceMode": voice_mode,
+                "videoMode": video_mode
+            })
 
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
