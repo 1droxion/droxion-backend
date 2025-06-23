@@ -1,73 +1,66 @@
 {
   "countries": {
-    "USA": {
-      "capital": "Washington, D.C.",
-      "currency": "USD",
-      "population": "331 million"
-    },
-    "India": {
-      "capital": "New Delhi",
-      "currency": "INR",
-      "population": "1.4 billion"
-    },
-    "China": {
-      "capital": "Beijing",
-      "currency": "CNY",
-      "population": "1.4 billion"
-    },
-    "France": {
-      "capital": "Paris",
-      "currency": "EUR",
-      "population": "67 million"
-    }
+    "USA": { "capital": "Washington, D.C.", "currency": "USD", "population": "331 million" },
+    "India": { "capital": "New Delhi", "currency": "INR", "population": "1.4 billion" },
+    "China": { "capital": "Beijing", "currency": "CNY", "population": "1.4 billion" },
+    "France": { "capital": "Paris", "currency": "EUR", "population": "67 million" },
+    "Japan": { "capital": "Tokyo", "currency": "JPY", "population": "125 million" }
   },
   "planets": {
-    "Mercury": {
-      "position": 1,
-      "type": "terrestrial"
-    },
-    "Venus": {
-      "position": 2,
-      "type": "terrestrial"
-    },
-    "Earth": {
-      "position": 3,
-      "type": "terrestrial"
-    },
-    "Mars": {
-      "position": 4,
-      "type": "terrestrial"
-    },
-    "Jupiter": {
-      "position": 5,
-      "type": "gas giant"
-    }
+    "Mercury": { "position": 1, "type": "terrestrial" },
+    "Venus": { "position": 2, "type": "terrestrial" },
+    "Earth": { "position": 3, "type": "terrestrial" },
+    "Mars": { "position": 4, "type": "terrestrial" },
+    "Jupiter": { "position": 5, "type": "gas giant" },
+    "Saturn": { "position": 6, "type": "gas giant" },
+    "Uranus": { "position": 7, "type": "ice giant" },
+    "Neptune": { "position": 8, "type": "ice giant" }
   },
   "currencies": {
     "USD": "United States Dollar",
     "INR": "Indian Rupee",
     "CNY": "Chinese Yuan",
-    "EUR": "Euro"
+    "EUR": "Euro",
+    "JPY": "Japanese Yen"
   },
   "languages": {
-    "English": ["USA", "UK", "India", "Canada"],
+    "English": ["USA", "UK", "India", "Canada", "Australia"],
     "Hindi": ["India"],
-    "Mandarin": ["China"],
+    "Mandarin": ["China", "Taiwan"],
+    "French": ["France", "Canada", "Belgium"],
     "Spanish": ["Spain", "Mexico", "Argentina"]
   },
   "tech": {
     "top_ai_companies": [
-      "OpenAI",
-      "Google DeepMind",
-      "Anthropic",
-      "Meta AI",
-      "Microsoft"
+      "OpenAI", "Google DeepMind", "Anthropic", "Meta AI", "Microsoft"
     ],
     "gpt_models": [
-      "GPT-2",
-      "GPT-3",
-      "GPT-3.5",
-      "GPT-4"
-    ]
+      "GPT-2", "GPT-3", "GPT-3.5", "GPT-4", "GPT-4o"
+    ],
+    "terms": {
+      "API": "Application Programming Interface",
+      "AI": "Artificial Intelligence",
+      "LLM": "Large Language Model",
+      "Cloud": "Remote servers accessed over the internet",
+      "Prompt": "Input given to an AI model"
+    }
+  },
+  "math": {
+    "area_circle": "π × r²",
+    "area_square": "side × side",
+    "volume_cube": "side³",
+    "pythagorean": "a² + b² = c²"
+  },
+  "jobs": {
+    "Software Engineer": { "avg_salary_usd": 120000, "description": "Develops software applications." },
+    "Doctor": { "avg_salary_usd": 180000, "description": "Diagnoses and treats medical conditions." },
+    "Teacher": { "avg_salary_usd": 50000, "description": "Educates students in various subjects." },
+    "Chef": { "avg_salary_usd": 45000, "description": "Prepares meals and manages kitchens." }
+  },
+  "foods": {
+    "Banana": { "calories": 89, "protein_g": 1.1, "fat_g": 0.3 },
+    "Apple": { "calories": 95, "protein_g": 0.5, "fat_g": 0.3 },
+    "Egg": { "calories": 78, "protein_g": 6, "fat_g": 5 },
+    "Rice": { "calories": 130, "protein_g": 2.7, "fat_g": 0.3 }
   }
 }
