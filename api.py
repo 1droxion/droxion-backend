@@ -1,9 +1,9 @@
-from flask import Flask, request, jsonify, make_response, render_template_string
+from flask import Flask, request, jsonify, render_template_string, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
-import os, requests, json
-from datetime import datetime, timedelta
-from collections import defaultdict
+import os, requests, json, time
+from datetime import datetime
+from collections import Counter
 from dateutil import parser
 import pytz
 
@@ -12,133 +12,239 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app, origins="*", supports_credentials=True)
 
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 LOG_FILE = "user_logs.json"
-TIMEZONE = pytz.timezone("US/Central")
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
-with open("world_knowledge.json") as f:
-    WORLD_DATA = json.load(f)
-
-MEMORY_FILE = "user_memory.json"
-if os.path.exists(MEMORY_FILE):
-    with open(MEMORY_FILE) as f:
-        USER_MEMORY = json.load(f)
-else:
-    USER_MEMORY = {}
-
-def save_user_memory():
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(USER_MEMORY, f, indent=2)
-
-def log_user_action(user_id, ip, action_type):
-    now = datetime.now(TIMEZONE).isoformat()
-    entry = {
-        "user_id": user_id,
-        "ip": ip,
-        "action": action_type,
-        "timestamp": now
-    }
-    logs = []
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE) as f:
-            logs = json.load(f)
-    logs.append(entry)
-    with open(LOG_FILE, "w") as f:
-        json.dump(logs, f, indent=2)
-
-def calculate_user_stats():
-    if not os.path.exists(LOG_FILE):
-        return [], 0, 0, 0
-    with open(LOG_FILE) as f:
-        logs = json.load(f)
-    today = datetime.now(TIMEZONE).date()
-    one_week = today - timedelta(days=7)
-    one_month = today - timedelta(days=30)
-    dau, wau, mau = set(), set(), set()
-    for log in logs:
-        day = parser.parse(log["timestamp"]).date()
-        uid = log["user_id"]
-        if day == today: dau.add(uid)
-        if day >= one_week: wau.add(uid)
-        if day >= one_month: mau.add(uid)
-    return logs, len(dau), len(wau), len(mau)
-
+# === MANUAL CORS HEADER FIX ===
 @app.after_request
-def cors_headers(resp):
-    resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    return resp
+def add_cors_headers(response):
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+    return response
 
 @app.route("/<path:path>", methods=["OPTIONS"])
 def handle_options(path):
-    return make_response("", 204)
+    response = make_response()
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    return response
 
-@app.route("/dashboard")
-def dashboard():
-    if request.args.get("token") != ADMIN_TOKEN:
-        return "Unauthorized", 403
-    logs, dau, wau, mau = calculate_user_stats()
-    rows = "".join([f"<tr><td>{x['user_id']}</td><td>{x['ip']}</td><td>{x['action']}</td><td>{x['timestamp']}</td></tr>" for x in reversed(logs[-200:])])
-    return render_template_string(f"""
-    <html><head><style>
-    body {{ background:#000; color:#0f0; font-family:monospace; }}
-    table {{ width:100%; border-collapse:collapse; margin-top:10px; }}
-    td,th {{ border:1px solid #0f0; padding:5px; }}
-    </style></head><body>
-    <h2>Droxion Dashboard</h2>
-    <p>DAU: {dau} | WAU: {wau} | MAU: {mau}</p>
-    <table><tr><th>User ID</th><th>IP</th><th>Action</th><th>Time</th></tr>{rows}</table>
-    </body></html>
-    """)
+def get_location_from_ip(ip):
+    try:
+        main_ip = ip.split(",")[0].strip()
+        res = requests.get(f"http://ip-api.com/json/{main_ip}")
+        data = res.json()
+        if data["status"] == "success":
+            return f"{data['city']}, {data['countryCode']}"
+        return ""
+    except:
+        return ""
+
+def get_client_ip():
+    return request.headers.get("X-Forwarded-For", request.remote_addr)
+
+def log_user_action(user_id, action, input_text, ip):
+    now = datetime.utcnow().isoformat() + "Z"
+    location = get_location_from_ip(ip)
+    new_entry = {
+        "timestamp": now,
+        "user_id": user_id,
+        "action": action,
+        "input": input_text,
+        "ip": ip,
+        "location": location
+    }
+    logs = []
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r") as f:
+                logs = json.load(f)
+        except:
+            logs = []
+    logs.append(new_entry)
+    with open(LOG_FILE, "w") as f:
+        json.dump(logs, f, indent=2)
+
+def parse_logs(file_path, user_filter=None, days=7):
+    now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+    dau_set, wau_set, mau_set = set(), set(), set()
+    hour_count = Counter()
+    input_count = Counter()
+    user_count = Counter()
+    location_count = Counter()
+    logs = []
+
+    if os.path.exists(file_path):
+        with open(file_path) as f:
+            data = json.load(f)
+        for entry in data:
+            try:
+                ts = parser.isoparse(entry["timestamp"]).replace(tzinfo=pytz.UTC)
+                if (now - ts).days <= days:
+                    uid = entry.get("user_id", "anonymous")
+                    logs.append(entry)
+                    dau_set.add(uid)
+                    wau_set.add(uid)
+                    mau_set.add(uid)
+                    hour = ts.hour
+                    hour_count[hour] += 1
+                    input_count[entry.get("input", "").strip()] += 1
+                    user_count[uid] += 1
+                    location_count[entry.get("location", "")] += 1
+            except:
+                continue
+    return {
+        "dau": len(dau_set),
+        "wau": len(wau_set),
+        "mau": len(mau_set),
+        "peak_hour": hour_count.most_common(1)[0][0] if hour_count else 0,
+        "top_users": dict(user_count.most_common(3)),
+        "top_inputs": dict(input_count.most_common(5)),
+        "top_locations": dict(location_count.most_common(3)),
+        "logs": logs[-100:]
+    }
+
+@app.route("/")
+def home():
+    return "✅ Droxion API is live."
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         data = request.json
         prompt = data.get("prompt", "").strip()
-        user_id = data.get("user_id", "anon")
-        ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+        if not prompt:
+            return jsonify({"reply": "❗ Prompt is required."}), 400
+
+        ip = get_client_ip()
+        user_id = data.get("user_id", "anonymous")
         voice_mode = data.get("voiceMode", False)
+        video_mode = data.get("videoMode", False)
 
-        q = prompt.lower()
-        if "my name is" in q:
-            name = prompt.split("my name is")[-1].split()[0]
-            USER_MEMORY[user_id] = {"name": name}
-            save_user_memory()
-            return jsonify({"reply": f"Nice to meet you, {name}!"})
-        if "what's my name" in q:
-            name = USER_MEMORY.get(user_id, {}).get("name", "not saved yet")
-            return jsonify({"reply": f"You said your name is {name}."})
-        if "who made you" in q or "your creator" in q:
-            return jsonify({"reply": "I was created by Dhruv Patel, the founder of Droxion."})
+        log_user_action(user_id, "message", prompt, ip)
 
-        if "video" in q or "youtube" in q or "watch" in q:
-            log_user_action(user_id, ip, "video")
-            return jsonify({"reply": "📺 Here's a video you might enjoy:", "videoUrl": "https://www.youtube.com/watch?v=I6LWYEc4M4U"})
-
-        if "image" in q or "photo" in q or "picture" in q:
-            log_user_action(user_id, ip, "image")
-            return jsonify({"reply": f"🖼️ Generating image for \"{prompt}\"...", "imagePrompt": prompt})
-
-        log_user_action(user_id, ip, "chat")
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
             "Content-Type": "application/json"
         }
+
         payload = {
             "model": "gpt-4",
             "messages": [
-                {"role": "system", "content": "You are Droxion AI built by Dhruv Patel."},
+                {"role": "system", "content": "You are Droxion AI Assistant."},
                 {"role": "user", "content": prompt}
             ]
         }
+
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
-        return jsonify({"reply": reply, "voiceMode": voice_mode})
-
+        return jsonify({
+            "reply": reply,
+            "voiceMode": voice_mode,
+            "videoMode": video_mode
+        })
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+
+@app.route("/generate-image", methods=["POST"])
+def generate_image():
+    try:
+        prompt = request.json.get("prompt", "").strip()
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
+
+        headers = {
+            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
+            "input": {
+                "prompt": prompt,
+                "width": 768,
+                "height": 768
+            }
+        }
+
+        r = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
+        poll_url = r["urls"]["get"]
+
+        while True:
+            poll = requests.get(poll_url, headers=headers).json()
+            if poll["status"] == "succeeded":
+                return jsonify({"image_url": poll["output"]})
+            elif poll["status"] == "failed":
+                return jsonify({"error": "Image generation failed"}), 500
+            time.sleep(1)
+    except Exception as e:
+        return jsonify({"error": f"Image error: {str(e)}"}), 500
+
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    try:
+        prompt = request.json.get("prompt", "")
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": prompt,
+            "type": "video",
+            "maxResults": 1,
+            "key": os.getenv("YOUTUBE_API_KEY")
+        }
+        res = requests.get(url, params=params).json()
+        item = res["items"][0]
+        video_id = item["id"]["videoId"]
+        return jsonify({
+            "title": item["snippet"]["title"],
+            "url": f"https://www.youtube.com/watch?v={video_id}"
+        })
+    except Exception as e:
+        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
+
+@app.route("/dashboard")
+def dashboard():
+    token = request.args.get("token", "")
+    if token != ADMIN_TOKEN:
+        return "❌ Unauthorized", 401
+    user_filter = request.args.get("user")
+    days = int(request.args.get("days", 7))
+    stats = parse_logs(LOG_FILE, user_filter, days)
+
+    html = """
+    <style>
+        body { background:#000; color:#fff; font-family:Arial; padding:20px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { border: 1px solid #444; padding: 8px; text-align: left; }
+        th { background-color: #222; }
+        tr:nth-child(even) { background-color: #111; }
+        h2, h4 { color: #0ff; }
+    </style>
+    <h2>📊 Droxion Dashboard</h2>
+    <div>DAU: {{stats['dau']}} | WAU: {{stats['wau']}} | MAU: {{stats['mau']}}</div>
+    <div>Peak Hour: {{stats['peak_hour']}}</div>
+    <div>Top Users: {{stats['top_users']}}</div>
+    <div>Top Inputs: {{stats['top_inputs']}}</div>
+    <div>Top Locations: {{stats['top_locations']}}</div>
+    <hr>
+    <h4>User Activity Logs</h4>
+    <table>
+        <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
+        {% for log in stats['logs'] %}
+        <tr>
+            <td>{{log["timestamp"]}}</td>
+            <td>{{log["user_id"]}}</td>
+            <td>{{log["action"]}}</td>
+            <td>{{log["input"]}}</td>
+            <td>{{log["ip"]}}</td>
+            <td>{{log["location"]}}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    """
+    return render_template_string(html, stats=stats)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
