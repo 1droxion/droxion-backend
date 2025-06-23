@@ -53,7 +53,7 @@ def recall_memory(user_id, prompt):
     if "what's my name" in q or "what is my name" in q:
         return f"You said your name is {user_data.get('name', 'not saved yet')}."
     if "where do i live" in q:
-        return f"You said you live in {user_data.get('location', 'an unknown place')}.">
+        return f"You said you live in {user_data.get('location', 'an unknown place')}."
     return None
 
 def get_world_answer(prompt):
