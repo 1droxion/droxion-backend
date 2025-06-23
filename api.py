@@ -15,9 +15,11 @@ CORS(app, origins="*", supports_credentials=True)
 LOG_FILE = "user_logs.json"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
+# === Load World Knowledge ===
 with open("world_knowledge.json") as f:
     WORLD_DATA = json.load(f)
 
+# === Load or Init Memory ===
 MEMORY_FILE = "user_memory.json"
 if os.path.exists(MEMORY_FILE):
     with open(MEMORY_FILE) as f:
@@ -61,7 +63,7 @@ def get_world_answer(prompt):
             if "capital" in q:
                 return f"The capital of {c} is {d['capital']}."
             elif "currency" in q:
-                return f"The currency of {c} is {d['currency']}.",
+                return f"The currency of {c} is {d['currency']}."
             elif "population" in q:
                 return f"The population of {c} is {d['population']}."
     for planet, d in WORLD_DATA.get("planets", {}).items():
@@ -79,6 +81,21 @@ def get_world_answer(prompt):
         return f"Available GPT models are: {', '.join(WORLD_DATA['tech']['gpt_models'])}."
     return None
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+    return response
+
+@app.route("/<path:path>", methods=["OPTIONS"])
+def handle_options(path):
+    response = make_response()
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    return response
+
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -92,18 +109,22 @@ def chat():
         voice_mode = data.get("voiceMode", False)
         video_mode = data.get("videoMode", False)
 
+        # Memory Save
         reply = update_memory(user_id, prompt)
         if reply:
             return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
 
+        # Memory Recall
         reply = recall_memory(user_id, prompt)
         if reply:
             return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
 
+        # World Facts
         reply = get_world_answer(prompt)
         if reply:
             return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
 
+        # GPT fallback
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
             "Content-Type": "application/json"
@@ -119,6 +140,10 @@ def chat():
 
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
-        return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
+        return jsonify({
+            "reply": reply,
+            "voiceMode": voice_mode,
+            "videoMode": video_mode
+        })
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
