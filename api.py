@@ -53,7 +53,7 @@ def recall_memory(user_id, prompt):
     if "what's my name" in q or "what is my name" in q:
         return f"You said your name is {user_data.get('name', 'not saved yet')}."
     if "where do i live" in q:
-        return f"You said you live in {user_data.get('location', 'an unknown place')}."
+        return f"You said you live in {user_data.get('location', 'an unknown place')}.">
     return None
 
 def get_world_answer(prompt):
@@ -139,3 +139,6 @@ def chat():
         return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
