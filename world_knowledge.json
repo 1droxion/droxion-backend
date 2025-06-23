@@ -1,0 +1,73 @@
+{
+  "countries": {
+    "USA": {
+      "capital": "Washington, D.C.",
+      "currency": "USD",
+      "population": "331 million"
+    },
+    "India": {
+      "capital": "New Delhi",
+      "currency": "INR",
+      "population": "1.4 billion"
+    },
+    "China": {
+      "capital": "Beijing",
+      "currency": "CNY",
+      "population": "1.4 billion"
+    },
+    "France": {
+      "capital": "Paris",
+      "currency": "EUR",
+      "population": "67 million"
+    }
+  },
+  "planets": {
+    "Mercury": {
+      "position": 1,
+      "type": "terrestrial"
+    },
+    "Venus": {
+      "position": 2,
+      "type": "terrestrial"
+    },
+    "Earth": {
+      "position": 3,
+      "type": "terrestrial"
+    },
+    "Mars": {
+      "position": 4,
+      "type": "terrestrial"
+    },
+    "Jupiter": {
+      "position": 5,
+      "type": "gas giant"
+    }
+  },
+  "currencies": {
+    "USD": "United States Dollar",
+    "INR": "Indian Rupee",
+    "CNY": "Chinese Yuan",
+    "EUR": "Euro"
+  },
+  "languages": {
+    "English": ["USA", "UK", "India", "Canada"],
+    "Hindi": ["India"],
+    "Mandarin": ["China"],
+    "Spanish": ["Spain", "Mexico", "Argentina"]
+  },
+  "tech": {
+    "top_ai_companies": [
+      "OpenAI",
+      "Google DeepMind",
+      "Anthropic",
+      "Meta AI",
+      "Microsoft"
+    ],
+    "gpt_models": [
+      "GPT-2",
+      "GPT-3",
+      "GPT-3.5",
+      "GPT-4"
+    ]
+  }
+}
