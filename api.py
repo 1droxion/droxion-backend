@@ -148,7 +148,6 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
-# ✅ Dashboard Route
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
     token = request.args.get("token", "")
@@ -157,7 +156,14 @@ def dashboard():
 
     try:
         with open(LOG_FILE) as f:
-            logs = [json.loads(line) for line in f if line.strip()]
+            logs = []
+            for line in f:
+                try:
+                    log = json.loads(line)
+                    if isinstance(log, dict):
+                        logs.append(log)
+                except:
+                    continue
 
         now = datetime.utcnow()
         today = now.date()
@@ -165,7 +171,11 @@ def dashboard():
         past_month = today - timedelta(days=30)
 
         def count_users(since):
-            return len(set(log["user_id"] for log in logs if parser.isoparse(log["timestamp"]).date() >= since))
+            return len(set(
+                log["user_id"]
+                for log in logs
+                if "timestamp" in log and parser.isoparse(log["timestamp"]).date() >= since
+            ))
 
         dau = count_users(today)
         wau = count_users(past_week)
