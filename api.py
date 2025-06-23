@@ -21,7 +21,6 @@ with open("world_knowledge.json") as f:
 
 def get_world_answer(prompt):
     q = prompt.lower()
-
     for c, d in WORLD_DATA.get("countries", {}).items():
         if c.lower() in q:
             if "capital" in q:
@@ -30,28 +29,21 @@ def get_world_answer(prompt):
                 return f"The currency of {c} is {d['currency']}."
             elif "population" in q:
                 return f"The population of {c} is {d['population']}."
-
     for planet, d in WORLD_DATA.get("planets", {}).items():
         if planet.lower() in q:
             return f"{planet} is the {d['position']} planet from the sun and is a {d['type']}."
-
     for code, name in WORLD_DATA.get("currencies", {}).items():
         if code.lower() in q or name.lower() in q:
             return f"{code} stands for {name}."
-
     for lang, regions in WORLD_DATA.get("languages", {}).items():
         if lang.lower() in q:
             return f"{lang} is spoken in {', '.join(regions)}."
-
     if "ai company" in q or "top ai" in q:
         return f"Top AI companies are: {', '.join(WORLD_DATA['tech']['top_ai_companies'])}."
-
     if "gpt" in q:
         return f"Available GPT models are: {', '.join(WORLD_DATA['tech']['gpt_models'])}."
-
     return None
 
-# === Manual CORS ===
 @app.after_request
 def add_cors_headers(response):
     response.headers.add("Access-Control-Allow-Origin", "*")
@@ -161,7 +153,6 @@ def chat():
 
         log_user_action(user_id, "message", prompt, ip)
 
-        # 🌍 World knowledge fallback
         world_reply = get_world_answer(prompt)
         if world_reply:
             return jsonify({
@@ -192,104 +183,3 @@ def chat():
         })
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
-
-@app.route("/generate-image", methods=["POST"])
-def generate_image():
-    try:
-        prompt = request.json.get("prompt", "").strip()
-        if not prompt:
-            return jsonify({"error": "Prompt is required"}), 400
-
-        headers = {
-            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
-            "Content-Type": "application/json"
-        }
-
-        payload = {
-            "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
-            "input": {
-                "prompt": prompt,
-                "width": 768,
-                "height": 768
-            }
-        }
-
-        r = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
-        poll_url = r["urls"]["get"]
-
-        while True:
-            poll = requests.get(poll_url, headers=headers).json()
-            if poll["status"] == "succeeded":
-                return jsonify({"image_url": poll["output"]})
-            elif poll["status"] == "failed":
-                return jsonify({"error": "Image generation failed"}), 500
-            time.sleep(1)
-    except Exception as e:
-        return jsonify({"error": f"Image error: {str(e)}"}), 500
-
-@app.route("/search-youtube", methods=["POST"])
-def search_youtube():
-    try:
-        prompt = request.json.get("prompt", "")
-        url = "https://www.googleapis.com/youtube/v3/search"
-        params = {
-            "part": "snippet",
-            "q": prompt,
-            "type": "video",
-            "maxResults": 1,
-            "key": os.getenv("YOUTUBE_API_KEY")
-        }
-        res = requests.get(url, params=params).json()
-        item = res["items"][0]
-        video_id = item["id"]["videoId"]
-        return jsonify({
-            "title": item["snippet"]["title"],
-            "url": f"https://www.youtube.com/watch?v={video_id}"
-        })
-    except Exception as e:
-        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
-
-@app.route("/dashboard")
-def dashboard():
-    token = request.args.get("token", "")
-    if token != ADMIN_TOKEN:
-        return "❌ Unauthorized", 401
-    user_filter = request.args.get("user")
-    days = int(request.args.get("days", 7))
-    stats = parse_logs(LOG_FILE, user_filter, days)
-
-    html = """
-    <style>
-        body { background:#000; color:#fff; font-family:Arial; padding:20px; }
-        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-        th, td { border: 1px solid #444; padding: 8px; text-align: left; }
-        th { background-color: #222; }
-        tr:nth-child(even) { background-color: #111; }
-        h2, h4 { color: #0ff; }
-    </style>
-    <h2>📊 Droxion Dashboard</h2>
-    <div>DAU: {{stats['dau']}} | WAU: {{stats['wau']}} | MAU: {{stats['mau']}}</div>
-    <div>Peak Hour: {{stats['peak_hour']}}</div>
-    <div>Top Users: {{stats['top_users']}}</div>
-    <div>Top Inputs: {{stats['top_inputs']}}</div>
-    <div>Top Locations: {{stats['top_locations']}}</div>
-    <hr>
-    <h4>User Activity Logs</h4>
-    <table>
-        <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
-        {% for log in stats['logs'] %}
-        <tr>
-            <td>{{log["timestamp"]}}</td>
-            <td>{{log["user_id"]}}</td>
-            <td>{{log["action"]}}</td>
-            <td>{{log["input"]}}</td>
-            <td>{{log["ip"]}}</td>
-            <td>{{log["location"]}}</td>
-        </tr>
-        {% endfor %}
-    </table>
-    """
-    return render_template_string(html, stats=stats)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
