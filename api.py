@@ -15,11 +15,9 @@ CORS(app, origins="*", supports_credentials=True)
 LOG_FILE = "user_logs.json"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
-# === Load World Knowledge ===
 with open("world_knowledge.json") as f:
     WORLD_DATA = json.load(f)
 
-# === Load or Init Memory ===
 MEMORY_FILE = "user_memory.json"
 if os.path.exists(MEMORY_FILE):
     with open(MEMORY_FILE) as f:
@@ -81,6 +79,36 @@ def get_world_answer(prompt):
         return f"Available GPT models are: {', '.join(WORLD_DATA['tech']['gpt_models'])}."
     return None
 
+def custom_answers(prompt):
+    q = prompt.lower()
+    custom_tags = [
+        "who made you", "who created you", "your creator", "your owner",
+        "founder", "dhruv patel", "droxion", "your name", "who built you"
+    ]
+    if any(tag in q for tag in custom_tags):
+        return "I was built and owned by Dhruv Patel, the founder of Droxion. I'm your personal AI assistant."
+
+    return None
+
+def get_youtube_embed(prompt):
+    q = prompt.lower()
+    tags = ["youtube", "video", "movie", "serial", "episode", "netflix", "show", "watch"]
+    if any(tag in q for tag in tags):
+        return {
+            "reply": "Here’s a video you might like:",
+            "videoUrl": "https://www.youtube.com/watch?v=I6LWYEc4M4U"
+        }
+    return None
+
+def detect_image_prompt(prompt):
+    q = prompt.lower()
+    if "image" in q or "photo" in q or "picture" in q or "drawing" in q:
+        return {
+            "reply": "🖼️ Generating image...",
+            "imagePrompt": prompt,
+        }
+    return None
+
 @app.after_request
 def add_cors_headers(response):
     response.headers.add("Access-Control-Allow-Origin", "*")
@@ -109,23 +137,24 @@ def chat():
         voice_mode = data.get("voiceMode", False)
         video_mode = data.get("videoMode", False)
 
-        reply = update_memory(user_id, prompt)
-        if reply:
-            return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
+        for check in [update_memory, recall_memory, get_world_answer, custom_answers]:
+            reply = check(user_id, prompt) if check in [update_memory, recall_memory] else check(prompt)
+            if reply:
+                return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
 
-        reply = recall_memory(user_id, prompt)
-        if reply:
-            return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
+        video = get_youtube_embed(prompt)
+        if video:
+            return jsonify({**video, "videoMode": True, "voiceMode": False})
 
-        reply = get_world_answer(prompt)
-        if reply:
-            return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
+        image = detect_image_prompt(prompt)
+        if image:
+            return jsonify({**image, "imageMode": True, "voiceMode": False})
 
+        # If nothing matched, use GPT
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
             "Content-Type": "application/json"
         }
-
         payload = {
             "model": "gpt-4",
             "messages": [
@@ -133,7 +162,6 @@ def chat():
                 {"role": "user", "content": prompt}
             ]
         }
-
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
