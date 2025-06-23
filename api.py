@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify, render_template_string, make_response
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os, requests, json, time
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import Counter
 from dateutil import parser
 import pytz
@@ -147,6 +147,45 @@ def chat():
         })
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+
+# ✅ Dashboard Route
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    token = request.args.get("token", "")
+    if token != ADMIN_TOKEN:
+        return "❌ Unauthorized", 401
+
+    try:
+        with open(LOG_FILE) as f:
+            logs = [json.loads(line) for line in f if line.strip()]
+
+        now = datetime.utcnow()
+        today = now.date()
+        past_week = today - timedelta(days=7)
+        past_month = today - timedelta(days=30)
+
+        def count_users(since):
+            return len(set(log["user_id"] for log in logs if parser.isoparse(log["timestamp"]).date() >= since))
+
+        dau = count_users(today)
+        wau = count_users(past_week)
+        mau = count_users(past_month)
+
+        html = f"""
+        <html><body style='font-family:sans-serif;background:#000;color:#0f0;padding:20px'>
+        <h1>📊 Droxion Dashboard</h1>
+        <p><b>DAU:</b> {dau}</p>
+        <p><b>WAU:</b> {wau}</p>
+        <p><b>MAU:</b> {mau}</p>
+        <hr>
+        <h3>Recent Logs</h3>
+        <pre style='background:#111;color:#0f0;padding:10px;border-radius:10px;max-height:400px;overflow:auto'>{json.dumps(logs[-10:], indent=2)}</pre>
+        </body></html>
+        """
+        return render_template_string(html)
+
+    except Exception as e:
+        return f"❌ Error loading dashboard: {str(e)}", 500
 
 # ✅ Port binding for Render
 if __name__ == "__main__":
