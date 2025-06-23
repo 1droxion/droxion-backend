@@ -109,6 +109,16 @@ def chat():
         voice_mode = data.get("voiceMode", False)
         video_mode = data.get("videoMode", False)
 
+        # === Log user activity ===
+        log_entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "user_id": user_id,
+            "prompt": prompt,
+            "ip": ip
+        }
+        with open(LOG_FILE, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+
         # Memory Save
         reply = update_memory(user_id, prompt)
         if reply:
