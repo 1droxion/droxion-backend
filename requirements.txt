@@ -1,5 +1,5 @@
 flask
-flask-cors[regex]
+flask-cors
 openai
 elevenlabs
 pexels_api
