@@ -10,7 +10,7 @@ import pytz
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, origins="*", supports_credentials=True)
+CORS(app, origins=["https://www.droxion.com"], supports_credentials=True)
 
 LOG_FILE = "user_logs.json"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
@@ -81,21 +81,6 @@ def get_world_answer(prompt):
         return f"Available GPT models are: {', '.join(WORLD_DATA['tech']['gpt_models'])}."
     return None
 
-@app.after_request
-def add_cors_headers(response):
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-    return response
-
-@app.route("/<path:path>", methods=["OPTIONS"])
-def handle_options(path):
-    response = make_response()
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    return response
-
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -109,7 +94,7 @@ def chat():
         voice_mode = data.get("voiceMode", False)
         video_mode = data.get("videoMode", False)
 
-        # === Log user activity ===
+        # Log user activity
         log_entry = {
             "timestamp": datetime.utcnow().isoformat(),
             "user_id": user_id,
@@ -119,18 +104,10 @@ def chat():
         with open(LOG_FILE, "a") as f:
             f.write(json.dumps(log_entry) + "\n")
 
-        # Memory Save
-        reply = update_memory(user_id, prompt)
-        if reply:
-            return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
+        reply = update_memory(user_id, prompt) or \
+                recall_memory(user_id, prompt) or \
+                get_world_answer(prompt)
 
-        # Memory Recall
-        reply = recall_memory(user_id, prompt)
-        if reply:
-            return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
-
-        # World Facts
-        reply = get_world_answer(prompt)
         if reply:
             return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
 
@@ -155,8 +132,43 @@ def chat():
             "voiceMode": voice_mode,
             "videoMode": video_mode
         })
+
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+
+@app.route("/image", methods=["POST"])
+def image():
+    try:
+        data = request.json
+        prompt = data.get("prompt", "a futuristic scene")
+        user_id = data.get("user_id", "anonymous")
+
+        # Optional log
+        with open(LOG_FILE, "a") as f:
+            f.write(json.dumps({
+                "timestamp": datetime.utcnow().isoformat(),
+                "user_id": user_id,
+                "image_prompt": prompt,
+                "ip": request.headers.get("X-Forwarded-For", request.remote_addr)
+            }) + "\n")
+
+        res = requests.post(
+            "https://api.replicate.com/v1/predictions",
+            headers={
+                "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "version": os.getenv("REPLICATE_MODEL_VERSION"),
+                "input": { "prompt": prompt }
+            }
+        )
+        data = res.json()
+        image_url = data.get("urls", {}).get("get", "")  # URL or status polling
+        return jsonify({"url": image_url})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
