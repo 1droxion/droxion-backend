@@ -1,9 +1,8 @@
-from flask import Flask, request, jsonify, render_template_string, make_response
+from flask import Flask, request, jsonify, make_response, render_template_string
 from flask_cors import CORS
 from dotenv import load_dotenv
-import os, requests, json, time
+import os, requests, json
 from datetime import datetime
-from collections import Counter
 from dateutil import parser
 import pytz
 
@@ -12,9 +11,9 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app, origins="*", supports_credentials=True)
 
-LOG_FILE = "user_logs.json"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
+# === Load Knowledge Files ===
 with open("world_knowledge.json") as f:
     WORLD_DATA = json.load(f)
 
@@ -37,9 +36,9 @@ def update_memory(user_id, prompt):
         save_user_memory()
         return f"Nice to meet you, {name}!"
     if "i live in" in q or "i am from" in q:
-        for phrase in ["i live in", "i am from"]:
-            if phrase in q:
-                loc = prompt.split(phrase)[-1].strip().split()[0]
+        for tag in ["i live in", "i am from"]:
+            if tag in q:
+                loc = prompt.split(tag)[-1].strip().split()[0]
                 USER_MEMORY.setdefault(user_id, {})["location"] = loc
                 save_user_memory()
                 return f"Got it, you live in {loc}."
@@ -47,11 +46,11 @@ def update_memory(user_id, prompt):
 
 def recall_memory(user_id, prompt):
     q = prompt.lower()
-    user_data = USER_MEMORY.get(user_id, {})
+    user = USER_MEMORY.get(user_id, {})
     if "what's my name" in q or "what is my name" in q:
-        return f"You said your name is {user_data.get('name', 'not saved yet')}."
+        return f"You said your name is {user.get('name', 'not saved yet')}."
     if "where do i live" in q:
-        return f"You said you live in {user_data.get('location', 'an unknown place')}."
+        return f"You said you live in {user.get('location', 'unknown place')}."
     return None
 
 def get_world_answer(prompt):
@@ -64,65 +63,73 @@ def get_world_answer(prompt):
                 return f"The currency of {c} is {d['currency']}."
             elif "population" in q:
                 return f"The population of {c} is {d['population']}."
-    for planet, d in WORLD_DATA.get("planets", {}).items():
-        if planet.lower() in q:
-            return f"{planet} is the {d['position']} planet from the sun and is a {d['type']}."
+    for p, d in WORLD_DATA.get("planets", {}).items():
+        if p.lower() in q:
+            return f"{p} is the {d['position']} planet and is a {d['type']}."
     for code, name in WORLD_DATA.get("currencies", {}).items():
         if code.lower() in q or name.lower() in q:
             return f"{code} stands for {name}."
     for lang, regions in WORLD_DATA.get("languages", {}).items():
         if lang.lower() in q:
             return f"{lang} is spoken in {', '.join(regions)}."
-    if "ai company" in q or "top ai" in q:
-        return f"Top AI companies are: {', '.join(WORLD_DATA['tech']['top_ai_companies'])}."
+    if "top ai" in q:
+        return f"Top AI companies: {', '.join(WORLD_DATA['tech']['top_ai_companies'])}."
     if "gpt" in q:
-        return f"Available GPT models are: {', '.join(WORLD_DATA['tech']['gpt_models'])}."
+        return f"Available GPT models: {', '.join(WORLD_DATA['tech']['gpt_models'])}."
     return None
 
-def custom_answers(prompt):
+def custom_reply(prompt):
     q = prompt.lower()
-    custom_tags = [
-        "who made you", "who created you", "your creator", "your owner",
-        "founder", "dhruv patel", "droxion", "your name", "who built you"
-    ]
-    if any(tag in q for tag in custom_tags):
-        return "I was built and owned by Dhruv Patel, the founder of Droxion. I'm your personal AI assistant."
-
+    if any(tag in q for tag in ["who made you", "who created you", "your creator", "your owner", "founder", "droxion", "dhruv patel"]):
+        return "I was created by Dhruv Patel, the founder of Droxion. I'm your personal AI Assistant."
     return None
 
-def get_youtube_embed(prompt):
+def get_youtube_response(prompt):
     q = prompt.lower()
-    tags = ["youtube", "video", "movie", "serial", "episode", "netflix", "show", "watch"]
-    if any(tag in q for tag in tags):
+    if any(x in q for x in ["video", "youtube", "watch", "episode", "movie"]):
         return {
-            "reply": "Here’s a video you might like:",
-            "videoUrl": "https://www.youtube.com/watch?v=I6LWYEc4M4U"
+            "reply": "🎬 Here's a video you might enjoy:",
+            "videoUrl": "https://www.youtube.com/watch?v=I6LWYEc4M4U",
+            "videoMode": True
         }
     return None
 
 def detect_image_prompt(prompt):
-    q = prompt.lower()
-    if "image" in q or "photo" in q or "picture" in q or "drawing" in q:
+    if any(x in prompt.lower() for x in ["image", "photo", "picture", "drawing"]):
         return {
             "reply": "🖼️ Generating image...",
             "imagePrompt": prompt,
+            "imageMode": True
         }
     return None
 
 @app.after_request
-def add_cors_headers(response):
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+def cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
 
 @app.route("/<path:path>", methods=["OPTIONS"])
-def handle_options(path):
-    response = make_response()
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    return response
+def options_route(path):
+    return make_response("", 204)
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    token = request.args.get("token")
+    if token != ADMIN_TOKEN:
+        return "Unauthorized", 403
+    return render_template_string("""
+    <html>
+      <head><title>Droxion Dashboard</title></head>
+      <body style="background:#000; color:#0f0; font-family:monospace; padding:20px;">
+        <h2>Droxion Dashboard</h2>
+        <p>Status: ✅ Online</p>
+        <p>Owner: Dhruv Patel</p>
+        <p>Token: {{ token }}</p>
+      </body>
+    </html>
+    """, token=token)
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -132,25 +139,25 @@ def chat():
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
 
-        ip = request.headers.get("X-Forwarded-For", request.remote_addr)
         user_id = data.get("user_id", "anonymous")
         voice_mode = data.get("voiceMode", False)
-        video_mode = data.get("videoMode", False)
 
-        for check in [update_memory, recall_memory, get_world_answer, custom_answers]:
-            reply = check(user_id, prompt) if check in [update_memory, recall_memory] else check(prompt)
-            if reply:
-                return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
+        # === Fast Answers ===
+        for fn in [update_memory, recall_memory, get_world_answer, custom_reply]:
+            r = fn(user_id, prompt) if fn in [update_memory, recall_memory] else fn(prompt)
+            if r:
+                return jsonify({"reply": r, "voiceMode": voice_mode})
 
-        video = get_youtube_embed(prompt)
+        # === Media Triggers ===
+        video = get_youtube_response(prompt)
         if video:
-            return jsonify({**video, "videoMode": True, "voiceMode": False})
+            return jsonify({**video, "voiceMode": False})
 
         image = detect_image_prompt(prompt)
         if image:
-            return jsonify({**image, "imageMode": True, "voiceMode": False})
+            return jsonify({**image, "voiceMode": False})
 
-        # If nothing matched, use GPT
+        # === GPT Fallback ===
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
             "Content-Type": "application/json"
@@ -164,7 +171,7 @@ def chat():
         }
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
-        return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
+        return jsonify({"reply": reply, "voiceMode": voice_mode})
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
