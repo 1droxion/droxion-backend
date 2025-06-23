@@ -15,9 +15,44 @@ CORS(app, origins="*", supports_credentials=True)
 LOG_FILE = "user_logs.json"
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
-# === Load World Knowledge ===
 with open("world_knowledge.json") as f:
     WORLD_DATA = json.load(f)
+
+MEMORY_FILE = "user_memory.json"
+if os.path.exists(MEMORY_FILE):
+    with open(MEMORY_FILE) as f:
+        USER_MEMORY = json.load(f)
+else:
+    USER_MEMORY = {}
+
+def save_user_memory():
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(USER_MEMORY, f, indent=2)
+
+def update_memory(user_id, prompt):
+    q = prompt.lower()
+    if "my name is" in q:
+        name = prompt.split("my name is")[-1].strip().split()[0]
+        USER_MEMORY.setdefault(user_id, {})["name"] = name
+        save_user_memory()
+        return f"Nice to meet you, {name}!"
+    if "i live in" in q or "i am from" in q:
+        for phrase in ["i live in", "i am from"]:
+            if phrase in q:
+                loc = prompt.split(phrase)[-1].strip().split()[0]
+                USER_MEMORY.setdefault(user_id, {})["location"] = loc
+                save_user_memory()
+                return f"Got it, you live in {loc}."
+    return None
+
+def recall_memory(user_id, prompt):
+    q = prompt.lower()
+    user_data = USER_MEMORY.get(user_id, {})
+    if "what's my name" in q or "what is my name" in q:
+        return f"You said your name is {user_data.get('name', 'not saved yet')}."
+    if "where do i live" in q:
+        return f"You said you live in {user_data.get('location', 'an unknown place')}."
+    return None
 
 def get_world_answer(prompt):
     q = prompt.lower()
@@ -26,7 +61,7 @@ def get_world_answer(prompt):
             if "capital" in q:
                 return f"The capital of {c} is {d['capital']}."
             elif "currency" in q:
-                return f"The currency of {c} is {d['currency']}."
+                return f"The currency of {c} is {d['currency']}.",
             elif "population" in q:
                 return f"The population of {c} is {d['population']}."
     for planet, d in WORLD_DATA.get("planets", {}).items():
@@ -44,100 +79,6 @@ def get_world_answer(prompt):
         return f"Available GPT models are: {', '.join(WORLD_DATA['tech']['gpt_models'])}."
     return None
 
-@app.after_request
-def add_cors_headers(response):
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-    return response
-
-@app.route("/<path:path>", methods=["OPTIONS"])
-def handle_options(path):
-    response = make_response()
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    return response
-
-def get_location_from_ip(ip):
-    try:
-        main_ip = ip.split(",")[0].strip()
-        res = requests.get(f"http://ip-api.com/json/{main_ip}")
-        data = res.json()
-        if data["status"] == "success":
-            return f"{data['city']}, {data['countryCode']}"
-        return ""
-    except:
-        return ""
-
-def get_client_ip():
-    return request.headers.get("X-Forwarded-For", request.remote_addr)
-
-def log_user_action(user_id, action, input_text, ip):
-    now = datetime.utcnow().isoformat() + "Z"
-    location = get_location_from_ip(ip)
-    new_entry = {
-        "timestamp": now,
-        "user_id": user_id,
-        "action": action,
-        "input": input_text,
-        "ip": ip,
-        "location": location
-    }
-    logs = []
-    if os.path.exists(LOG_FILE):
-        try:
-            with open(LOG_FILE, "r") as f:
-                logs = json.load(f)
-        except:
-            logs = []
-    logs.append(new_entry)
-    with open(LOG_FILE, "w") as f:
-        json.dump(logs, f, indent=2)
-
-def parse_logs(file_path, user_filter=None, days=7):
-    now = datetime.utcnow().replace(tzinfo=pytz.UTC)
-    dau_set, wau_set, mau_set = set(), set(), set()
-    hour_count = Counter()
-    input_count = Counter()
-    user_count = Counter()
-    location_count = Counter()
-    logs = []
-
-    if os.path.exists(file_path):
-        with open(file_path) as f:
-            data = json.load(f)
-        for entry in data:
-            try:
-                ts = parser.isoparse(entry["timestamp"]).replace(tzinfo=pytz.UTC)
-                if (now - ts).days <= days:
-                    uid = entry.get("user_id", "anonymous")
-                    logs.append(entry)
-                    dau_set.add(uid)
-                    wau_set.add(uid)
-                    mau_set.add(uid)
-                    hour = ts.hour
-                    hour_count[hour] += 1
-                    input_count[entry.get("input", "").strip()] += 1
-                    user_count[uid] += 1
-                    location_count[entry.get("location", "")] += 1
-            except:
-                continue
-    return {
-        "dau": len(dau_set),
-        "wau": len(wau_set),
-        "mau": len(mau_set),
-        "peak_hour": hour_count.most_common(1)[0][0] if hour_count else 0,
-        "top_users": dict(user_count.most_common(3)),
-        "top_inputs": dict(input_count.most_common(5)),
-        "top_locations": dict(location_count.most_common(3)),
-        "logs": logs[-100:]
-    }
-
-@app.route("/")
-def home():
-    return "✅ Droxion API is live."
-
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -146,20 +87,22 @@ def chat():
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
 
-        ip = get_client_ip()
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr)
         user_id = data.get("user_id", "anonymous")
         voice_mode = data.get("voiceMode", False)
         video_mode = data.get("videoMode", False)
 
-        log_user_action(user_id, "message", prompt, ip)
+        reply = update_memory(user_id, prompt)
+        if reply:
+            return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
 
-        world_reply = get_world_answer(prompt)
-        if world_reply:
-            return jsonify({
-                "reply": world_reply,
-                "voiceMode": voice_mode,
-                "videoMode": video_mode
-            })
+        reply = recall_memory(user_id, prompt)
+        if reply:
+            return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
+
+        reply = get_world_answer(prompt)
+        if reply:
+            return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
 
         headers = {
             "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
@@ -176,10 +119,6 @@ def chat():
 
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
-        return jsonify({
-            "reply": reply,
-            "voiceMode": voice_mode,
-            "videoMode": video_mode
-        })
+        return jsonify({"reply": reply, "voiceMode": voice_mode, "videoMode": video_mode})
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
