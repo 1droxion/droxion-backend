@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import os, requests, json
 from datetime import datetime, timedelta
 from collections import defaultdict
+from dateutil import parser  # ✅ Required for date parsing
 import pytz
 
 load_dotenv()
@@ -15,11 +16,11 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 LOG_FILE = "user_logs.json"
 TIMEZONE = pytz.timezone("US/Central")
 
-# === Load World Knowledge ===
+# === Load world knowledge ===
 with open("world_knowledge.json") as f:
     WORLD_DATA = json.load(f)
 
-# === Load Memory File ===
+# === Load or Init Memory ===
 MEMORY_FILE = "user_memory.json"
 if os.path.exists(MEMORY_FILE):
     with open(MEMORY_FILE) as f:
@@ -58,13 +59,10 @@ def calculate_user_stats():
     one_month_ago = today - timedelta(days=30)
 
     active_today, active_week, active_month = set(), set(), set()
-    ip_map = {}
 
     for log in logs:
         log_time = parser.parse(log["timestamp"]).date()
         uid = log["user_id"]
-        ip = log["ip"]
-        ip_map[uid] = ip
         if log_time == today:
             active_today.add(uid)
         if log_time >= one_week_ago:
@@ -156,6 +154,10 @@ def cors_headers(response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
 
+@app.route("/<path:path>", methods=["OPTIONS"])
+def handle_options(path):
+    return make_response("", 204)
+
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
     token = request.args.get("token")
@@ -164,7 +166,7 @@ def dashboard():
 
     logs, dau, wau, mau = calculate_user_stats()
     rows = ""
-    for log in reversed(logs[-200:]):  # show last 200
+    for log in reversed(logs[-200:]):  # show last 200 logs
         rows += f"<tr><td>{log['user_id']}</td><td>{log['ip']}</td><td>{log['action']}</td><td>{log['timestamp']}</td></tr>"
 
     return render_template_string(f"""
@@ -235,10 +237,6 @@ def chat():
         return jsonify({"reply": reply, "voiceMode": voice_mode})
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
-
-@app.route("/<path:path>", methods=["OPTIONS"])
-def handle_options(path):
-    return make_response("", 204)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
