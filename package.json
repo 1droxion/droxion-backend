@@ -1,32 +1,11 @@
 {
-  "name": "droxion-live-final",
+  "name": "winkly-signal-server",
   "version": "1.0.0",
-  "private": true,
+  "main": "socket-server.js",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "start": "node socket-server.js"
   },
   "dependencies": {
-    "@tsparticles/all": "^3.8.1",
-    "@tsparticles/engine": "^3.8.1",
-    "@tsparticles/react": "^3.0.0",
-    "axios": "^1.9.0",
-    "framer-motion": "^12.15.0",
-    "lucide-react": "^0.511.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^7.6.1",
-    "react-markdown": "^9.0.0",
-    "rehype-raw": "^6.1.1",
-    "react-syntax-highlighter": "^15.5.0",
-    "vite-plugin-pwa": "^0.16.4"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.0.3",
-    "vite": "^4.5.14",
-    "tailwindcss": "^3.3.0",
-    "postcss": "^8.4.21",
-    "autoprefixer": "^10.4.13"
+    "ws": "^8.15.0"
   }
 }
