@@ -1,12 +1,4 @@
-flask
+Flask
 flask-cors
-openai
-elevenlabs
-pexels_api
-requests
-python-dotenv
+stripe
 gunicorn
-moviepy
-python-dateutil
-pytz
-ipinfo
