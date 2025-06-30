@@ -1,0 +1,10 @@
+{
+  "example-user-abc123": {
+    "paid": true,
+    "date": "2025-06-30T21:40:00.000Z"
+  },
+  "example-user-xyz789": {
+    "paid": true,
+    "date": "2025-07-01T09:25:00.000Z"
+  }
+}
