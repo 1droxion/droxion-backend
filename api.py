@@ -6,16 +6,27 @@ from datetime import datetime
 from collections import Counter
 from dateutil import parser
 import pytz
+import stripe
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app, origins="*", supports_credentials=True)
 
-LOG_FILE = "user_logs.json"
+# === ENV VARS ===
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
-# === MANUAL CORS HEADER FIX ===
+stripe.api_key = STRIPE_SECRET_KEY
+
+# === Files ===
+LOG_FILE = "user_logs.json"
+PAID_USER_FILE = "users.json"
+
 @app.after_request
 def add_cors_headers(response):
     response.headers.add("Access-Control-Allow-Origin", "*")
@@ -67,49 +78,67 @@ def log_user_action(user_id, action, input_text, ip):
     with open(LOG_FILE, "w") as f:
         json.dump(logs, f, indent=2)
 
-def parse_logs(file_path, user_filter=None, days=7):
-    now = datetime.utcnow().replace(tzinfo=pytz.UTC)
-    dau_set, wau_set, mau_set = set(), set(), set()
-    hour_count = Counter()
-    input_count = Counter()
-    user_count = Counter()
-    location_count = Counter()
-    logs = []
+def load_paid_users():
+    if os.path.exists(PAID_USER_FILE):
+        with open(PAID_USER_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
-    if os.path.exists(file_path):
-        with open(file_path) as f:
-            data = json.load(f)
-        for entry in data:
-            try:
-                ts = parser.isoparse(entry["timestamp"]).replace(tzinfo=pytz.UTC)
-                if (now - ts).days <= days:
-                    uid = entry.get("user_id", "anonymous")
-                    logs.append(entry)
-                    dau_set.add(uid)
-                    wau_set.add(uid)
-                    mau_set.add(uid)
-                    hour = ts.hour
-                    hour_count[hour] += 1
-                    input_count[entry.get("input", "").strip()] += 1
-                    user_count[uid] += 1
-                    location_count[entry.get("location", "")] += 1
-            except:
-                continue
-    return {
-        "dau": len(dau_set),
-        "wau": len(wau_set),
-        "mau": len(mau_set),
-        "peak_hour": hour_count.most_common(1)[0][0] if hour_count else 0,
-        "top_users": dict(user_count.most_common(3)),
-        "top_inputs": dict(input_count.most_common(5)),
-        "top_locations": dict(location_count.most_common(3)),
-        "logs": logs[-100:]
-    }
+def save_paid_users(data):
+    with open(PAID_USER_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
+# === HEALTH ===
 @app.route("/")
 def home():
-    return "✅ Droxion API is live."
+    return "✅ Droxion Flask Backend is live."
 
+# === STRIPE WEBHOOK ===
+@app.route("/stripe-webhook", methods=["POST"])
+def stripe_webhook():
+    payload = request.data
+    sig_header = request.headers.get("stripe-signature")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except Exception as e:
+        return f"❌ Webhook error: {str(e)}", 400
+
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        user_id = session.get("metadata", {}).get("user_id", "")
+        print("✅ Stripe payment complete for:", user_id)
+
+        users = load_paid_users()
+        users[user_id] = {"paid": True, "date": datetime.utcnow().isoformat()}
+        save_paid_users(users)
+
+    return jsonify(success=True)
+
+# === CHECK IF PAID ===
+@app.route("/check-paid", methods=["POST"])
+def check_paid():
+    data = request.json
+    user_id = data.get("user_id", "")
+    if not user_id:
+        return jsonify({"paid": False}), 400
+
+    users = load_paid_users()
+    is_paid = users.get(user_id, {}).get("paid", False)
+    return jsonify({"paid": is_paid})
+
+# === TRACKING ===
+@app.route("/track", methods=["POST"])
+def track():
+    data = request.json
+    log_user_action(
+        data.get("user_id", "anonymous"),
+        data.get("action", ""),
+        data.get("input", ""),
+        get_client_ip()
+    )
+    return jsonify({"ok": True})
+
+# === CHAT ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -118,15 +147,10 @@ def chat():
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
 
-        ip = get_client_ip()
-        user_id = data.get("user_id", "anonymous")
-        voice_mode = data.get("voiceMode", False)
-        video_mode = data.get("videoMode", False)
-
-        log_user_action(user_id, "message", prompt, ip)
+        log_user_action(data.get("user_id", "anonymous"), "message", prompt, get_client_ip())
 
         headers = {
-            "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json"
         }
 
@@ -140,14 +164,11 @@ def chat():
 
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
-        return jsonify({
-            "reply": reply,
-            "voiceMode": voice_mode,
-            "videoMode": video_mode
-        })
+        return jsonify({"reply": reply})
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
+# === IMAGE GENERATION ===
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -156,17 +177,13 @@ def generate_image():
             return jsonify({"error": "Prompt is required"}), 400
 
         headers = {
-            "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
+            "Authorization": f"Token {REPLICATE_API_TOKEN}",
             "Content-Type": "application/json"
         }
 
         payload = {
             "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
-            "input": {
-                "prompt": prompt,
-                "width": 768,
-                "height": 768
-            }
+            "input": { "prompt": prompt, "width": 768, "height": 768 }
         }
 
         r = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
@@ -182,6 +199,7 @@ def generate_image():
     except Exception as e:
         return jsonify({"error": f"Image error: {str(e)}"}), 500
 
+# === YOUTUBE ===
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     try:
@@ -192,18 +210,18 @@ def search_youtube():
             "q": prompt,
             "type": "video",
             "maxResults": 1,
-            "key": os.getenv("YOUTUBE_API_KEY")
+            "key": YOUTUBE_API_KEY
         }
         res = requests.get(url, params=params).json()
         item = res["items"][0]
-        video_id = item["id"]["videoId"]
         return jsonify({
             "title": item["snippet"]["title"],
-            "url": f"https://www.youtube.com/watch?v={video_id}"
+            "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}"
         })
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
+# === DASHBOARD ===
 @app.route("/dashboard")
 def dashboard():
     token = request.args.get("token", "")
@@ -211,40 +229,56 @@ def dashboard():
         return "❌ Unauthorized", 401
     user_filter = request.args.get("user")
     days = int(request.args.get("days", 7))
-    stats = parse_logs(LOG_FILE, user_filter, days)
+
+    now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+    dau_set, wau_set, mau_set = set(), set(), set()
+    hour_count = Counter()
+    input_count = Counter()
+    user_count = Counter()
+    location_count = Counter()
+    logs = []
+
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE) as f:
+            data = json.load(f)
+        for entry in data:
+            try:
+                ts = parser.isoparse(entry["timestamp"]).replace(tzinfo=pytz.UTC)
+                if (now - ts).days <= days:
+                    uid = entry.get("user_id", "anonymous")
+                    logs.append(entry)
+                    dau_set.add(uid)
+                    wau_set.add(uid)
+                    mau_set.add(uid)
+                    hour_count[ts.hour] += 1
+                    input_count[entry.get("input", "").strip()] += 1
+                    user_count[uid] += 1
+                    location_count[entry.get("location", "")] += 1
+            except:
+                continue
 
     html = """
-    <style>
-        body { background:#000; color:#fff; font-family:Arial; padding:20px; }
-        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-        th, td { border: 1px solid #444; padding: 8px; text-align: left; }
-        th { background-color: #222; }
-        tr:nth-child(even) { background-color: #111; }
-        h2, h4 { color: #0ff; }
-    </style>
+    <style>body{background:#000;color:#fff;font-family:Arial;padding:20px;}table{border-collapse:collapse;width:100%;margin-top:20px;}th,td{border:1px solid #444;padding:8px;text-align:left;}th{background-color:#222;}tr:nth-child(even){background-color:#111;}h2,h4{color:#0ff;}</style>
     <h2>📊 Droxion Dashboard</h2>
-    <div>DAU: {{stats['dau']}} | WAU: {{stats['wau']}} | MAU: {{stats['mau']}}</div>
-    <div>Peak Hour: {{stats['peak_hour']}}</div>
-    <div>Top Users: {{stats['top_users']}}</div>
-    <div>Top Inputs: {{stats['top_inputs']}}</div>
-    <div>Top Locations: {{stats['top_locations']}}</div>
-    <hr>
-    <h4>User Activity Logs</h4>
-    <table>
-        <tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
-        {% for log in stats['logs'] %}
-        <tr>
-            <td>{{log["timestamp"]}}</td>
-            <td>{{log["user_id"]}}</td>
-            <td>{{log["action"]}}</td>
-            <td>{{log["input"]}}</td>
-            <td>{{log["ip"]}}</td>
-            <td>{{log["location"]}}</td>
-        </tr>
-        {% endfor %}
+    <div>DAU: {{dau}} | WAU: {{wau}} | MAU: {{mau}}</div>
+    <div>Peak Hour: {{peak}}</div>
+    <div>Top Users: {{users}}</div>
+    <div>Top Inputs: {{inputs}}</div>
+    <div>Top Locations: {{locations}}</div>
+    <hr><h4>Recent Logs</h4><table><tr><th>Time</th><th>User</th><th>Action</th><th>Input</th><th>IP</th><th>Location</th></tr>
+    {% for log in logs %}<tr><td>{{log["timestamp"]}}</td><td>{{log["user_id"]}}</td><td>{{log["action"]}}</td><td>{{log["input"]}}</td><td>{{log["ip"]}}</td><td>{{log["location"]}}</td></tr>{% endfor %}
     </table>
     """
-    return render_template_string(html, stats=stats)
+    return render_template_string(html,
+        dau=len(dau_set),
+        wau=len(wau_set),
+        mau=len(mau_set),
+        peak=hour_count.most_common(1)[0][0] if hour_count else 0,
+        users=dict(user_count.most_common(3)),
+        inputs=dict(input_count.most_common(5)),
+        locations=dict(location_count.most_common(3)),
+        logs=logs[-100:]
+    )
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
