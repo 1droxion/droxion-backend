@@ -10,3 +10,4 @@ moviepy
 python-dateutil
 pytz
 ipinfo
+stripe
