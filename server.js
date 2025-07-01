@@ -34,20 +34,32 @@ app.post("/stripe-webhook", bodyParser.raw({ type: "application/json" }), (req, 
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
-    const email = session.customer_email;
     const userId = session.metadata?.user_id || "";
+    const plan = session.metadata?.plan || "pro";
 
-    console.log(`✅ Payment complete for ${email} (user_id: ${userId})`);
+    console.log(`✅ Payment complete for user_id: ${userId} → plan: ${plan}`);
 
     let users = {};
     if (fs.existsSync(USER_DB_PATH)) {
       users = JSON.parse(fs.readFileSync(USER_DB_PATH, "utf8"));
     }
 
-    users[userId] = { paid: true };
-    fs.writeFileSync(USER_DB_PATH, JSON.stringify(users, null, 2));
+    if (!users[userId]) {
+      users[userId] = { coins: 0, plan: "none" };
+    }
 
-    console.log("🪙 User marked as paid.");
+    // 🪙 Add coins based on plan
+    let coins = 0;
+    if (plan === "starter") coins = 50;
+    else if (plan === "pro") coins = 150;
+    else if (plan === "business") coins = 400;
+
+    users[userId].paid = true;
+    users[userId].plan = plan;
+    users[userId].coins = (users[userId].coins || 0) + coins;
+
+    fs.writeFileSync(USER_DB_PATH, JSON.stringify(users, null, 2));
+    console.log(`🪙 ${coins} coins added to ${userId}`);
   }
 
   res.json({ received: true });
@@ -70,7 +82,7 @@ app.post("/check-paid", (req, res) => {
   res.json({ paid });
 });
 
-// ✅ Track usage (optional)
+// ✅ Track usage
 app.post("/track", (req, res) => {
   const log = {
     user_id: req.body.user_id,
