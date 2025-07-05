@@ -11,7 +11,6 @@ import stripe
 load_dotenv()
 
 app = Flask(__name__)
-# ✅ Allow only your frontend (Vercel domain)
 CORS(app, origins=["https://droxion-live-final.vercel.app"], supports_credentials=True)
 
 # === ENV VARS ===
@@ -199,12 +198,24 @@ def search_youtube():
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
+# ✅ FAKE VIDEO GENERATOR FOR NOW
+@app.route("/generate", methods=["POST"])
+def generate_video():
+    try:
+        data = request.json
+        topic = data.get("topic", "Success")
+        # Placeholder video URL
+        return jsonify({
+            "videoUrl": "/static/fake_videos/sample.mp4"
+        })
+    except Exception as e:
+        return jsonify({"error": f"Video generation error: {str(e)}"}), 500
+
 @app.route("/dashboard")
 def dashboard():
     token = request.args.get("token", "")
     if token != ADMIN_TOKEN:
         return "❌ Unauthorized", 401
-    user_filter = request.args.get("user")
     days = int(request.args.get("days", 7))
 
     now = datetime.utcnow().replace(tzinfo=pytz.UTC)
