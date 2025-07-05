@@ -89,7 +89,6 @@ def stripe_webhook():
         session = event["data"]["object"]
         user_id = session.get("metadata", {}).get("user_id", "")
         print("✅ Stripe payment complete for:", user_id)
-
         users = load_paid_users()
         users[user_id] = {"paid": True, "date": datetime.utcnow().isoformat()}
         save_paid_users(users)
@@ -102,7 +101,6 @@ def check_paid():
     user_id = data.get("user_id", "")
     if not user_id:
         return jsonify({"paid": False}), 400
-
     users = load_paid_users()
     is_paid = users.get(user_id, {}).get("paid", False)
     return jsonify({"paid": is_paid})
@@ -125,14 +123,11 @@ def chat():
         prompt = data.get("prompt", "").strip()
         if not prompt:
             return jsonify({"reply": "❗ Prompt is required."}), 400
-
         log_user_action(data.get("user_id", "anonymous"), "message", prompt, get_client_ip())
-
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json"
         }
-
         payload = {
             "model": "gpt-4",
             "messages": [
@@ -140,7 +135,6 @@ def chat():
                 {"role": "user", "content": prompt}
             ]
         }
-
         res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
@@ -153,20 +147,16 @@ def generate_image():
         prompt = request.json.get("prompt", "").strip()
         if not prompt:
             return jsonify({"error": "Prompt is required"}), 400
-
         headers = {
             "Authorization": f"Token {REPLICATE_API_TOKEN}",
             "Content-Type": "application/json"
         }
-
         payload = {
             "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
             "input": { "prompt": prompt, "width": 768, "height": 768 }
         }
-
         r = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
         poll_url = r["urls"]["get"]
-
         while True:
             poll = requests.get(poll_url, headers=headers).json()
             if poll["status"] == "succeeded":
@@ -198,18 +188,48 @@ def search_youtube():
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
-# ✅ FAKE VIDEO GENERATOR FOR NOW
 @app.route("/generate", methods=["POST"])
 def generate_video():
     try:
         data = request.json
         topic = data.get("topic", "Success")
-        # Placeholder video URL
         return jsonify({
             "videoUrl": "/static/fake_videos/sample.mp4"
         })
     except Exception as e:
         return jsonify({"error": f"Video generation error: {str(e)}"}), 500
+
+@app.route("/user-stats")
+def user_stats():
+    try:
+        user_id = request.args.get("user_id", "anonymous")
+        logs = []
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, "r") as f:
+                logs = json.load(f)
+
+        video_count = sum(1 for l in logs if l.get("action") == "generate" and l.get("user_id") == user_id)
+        users = load_paid_users()
+        user_plan = "Starter"
+        video_limit = 5
+        credits = 0
+
+        if users.get(user_id, {}).get("paid"):
+            user_plan = "Pro"
+            video_limit = 100
+            credits = 50
+
+        return jsonify({
+            "user": user_id,
+            "plan": {
+                "name": user_plan,
+                "videoLimit": video_limit
+            },
+            "videosThisMonth": video_count,
+            "credits": credits
+        })
+    except Exception as e:
+        return jsonify({"error": f"user-stats error: {str(e)}"}), 500
 
 @app.route("/dashboard")
 def dashboard():
@@ -217,7 +237,6 @@ def dashboard():
     if token != ADMIN_TOKEN:
         return "❌ Unauthorized", 401
     days = int(request.args.get("days", 7))
-
     now = datetime.utcnow().replace(tzinfo=pytz.UTC)
     dau_set, wau_set, mau_set = set(), set(), set()
     hour_count = Counter()
@@ -225,7 +244,6 @@ def dashboard():
     user_count = Counter()
     location_count = Counter()
     logs = []
-
     if os.path.exists(LOG_FILE):
         with open(LOG_FILE) as f:
             data = json.load(f)
@@ -244,7 +262,6 @@ def dashboard():
                     location_count[entry.get("location", "")] += 1
             except:
                 continue
-
     html = """
     <style>body{background:#000;color:#fff;font-family:Arial;padding:20px;}table{border-collapse:collapse;width:100%;margin-top:20px;}th,td{border:1px solid #444;padding:8px;text-align:left;}th{background-color:#222;}tr:nth-child(even){background-color:#111;}h2,h4{color:#0ff;}</style>
     <h2>📊 Droxion Dashboard</h2>
