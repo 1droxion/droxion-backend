@@ -11,7 +11,10 @@ import stripe
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, origins=["https://droxion-live-final.vercel.app"], supports_credentials=True)
+CORS(app, origins=[
+    "https://droxion-live-final.vercel.app",
+    "https://www.droxion.com"
+], supports_credentials=True)
 
 # === ENV VARS ===
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
@@ -67,7 +70,7 @@ def fetch_real_time_info(prompt, location):
     city = location.split(",")[0] if location else "New York"
 
     if "weather" in prompt_lower:
-        return f"\ud83c\udf24\ufe0f Weather in {city}: 82\u00b0F, Clear Skies — [View Full Forecast](https://www.google.com/search?q=weather+{city.replace(' ', '+')})"
+        return f"🌤️ Weather in {city}: 82°F, Clear Skies — [View Full Forecast](https://www.google.com/search?q=weather+{city.replace(' ', '+')})"
     if "time" in prompt_lower:
         try:
             tz = pytz.timezone("America/New_York")
@@ -78,14 +81,18 @@ def fetch_real_time_info(prompt, location):
             elif "mumbai" in prompt_lower:
                 tz = pytz.timezone("Asia/Kolkata")
             time_now = datetime.now(tz).strftime("%I:%M %p, %A")
-            return f"\ud83d\udd52 Current time in {tz.zone.split('/')[-1]}: {time_now}"
+            return f"🕒 Current time in {tz.zone.split('/')[-1]}: {time_now}"
         except:
             pass
     if "news" in prompt_lower:
-        return "\ud83d\udcf0 Latest News: [Apple unveils new AI chip at WWDC 2025](https://www.cnn.com/example)"
+        return "📰 Latest News: [Apple unveils new AI chip at WWDC 2025](https://www.cnn.com/example)"
     if "youtube" in prompt_lower or "trending" in prompt_lower:
-        return "\ud83d\udd25 Top YouTube Video: [MrBeast - Survive 7 Days Challenge](https://youtube.com/watch?v=example)"
+        return "🔥 Top YouTube Video: [MrBeast - Survive 7 Days Challenge](https://youtube.com/watch?v=example)"
     return None
+
+@app.route("/")
+def home():
+    return "✅ Droxion Flask Backend is live."
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -93,14 +100,13 @@ def chat():
         data = request.json
         prompt = data.get("prompt", "").strip()
         if not prompt:
-            return jsonify({"reply": "\u2757 Prompt is required."}), 400
+            return jsonify({"reply": "❗ Prompt is required."}), 400
 
         user_id = data.get("user_id", "anonymous")
         ip = get_client_ip()
         location = get_location_from_ip(ip)
         log_user_action(user_id, "message", prompt, ip)
 
-        # Inject real-time info
         real_time_reply = fetch_real_time_info(prompt, location)
         if real_time_reply:
             return jsonify({"reply": real_time_reply})
@@ -120,7 +126,9 @@ def chat():
         reply = res.json()["choices"][0]["message"]["content"]
         return jsonify({"reply": reply})
     except Exception as e:
-        return jsonify({"reply": f"\u274c Error: {str(e)}"}), 500
+        return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+
+# Keep the rest of your routes (unchanged) — track, stripe-webhook, check-paid, etc.
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
