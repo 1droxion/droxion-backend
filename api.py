@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string, make_response
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os, requests, json, time
@@ -11,7 +11,8 @@ import stripe
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, origins="*", supports_credentials=True)
+# ✅ Allow only your frontend (Vercel domain)
+CORS(app, origins=["https://droxion-live-final.vercel.app"], supports_credentials=True)
 
 # === ENV VARS ===
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
@@ -23,24 +24,8 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "droxion2025")
 
 stripe.api_key = STRIPE_SECRET_KEY
 
-# === Files ===
 LOG_FILE = "user_logs.json"
 PAID_USER_FILE = "users.json"
-
-@app.after_request
-def add_cors_headers(response):
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-    return response
-
-@app.route("/<path:path>", methods=["OPTIONS"])
-def handle_options(path):
-    response = make_response()
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    return response
 
 def get_location_from_ip(ip):
     try:
@@ -88,12 +73,10 @@ def save_paid_users(data):
     with open(PAID_USER_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-# === HEALTH ===
 @app.route("/")
 def home():
     return "✅ Droxion Flask Backend is live."
 
-# === STRIPE WEBHOOK ===
 @app.route("/stripe-webhook", methods=["POST"])
 def stripe_webhook():
     payload = request.data
@@ -114,7 +97,6 @@ def stripe_webhook():
 
     return jsonify(success=True)
 
-# === CHECK IF PAID ===
 @app.route("/check-paid", methods=["POST"])
 def check_paid():
     data = request.json
@@ -126,7 +108,6 @@ def check_paid():
     is_paid = users.get(user_id, {}).get("paid", False)
     return jsonify({"paid": is_paid})
 
-# === TRACKING ===
 @app.route("/track", methods=["POST"])
 def track():
     data = request.json
@@ -138,7 +119,6 @@ def track():
     )
     return jsonify({"ok": True})
 
-# === CHAT ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -168,7 +148,6 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
-# === IMAGE GENERATION ===
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -199,7 +178,6 @@ def generate_image():
     except Exception as e:
         return jsonify({"error": f"Image error: {str(e)}"}), 500
 
-# === YOUTUBE ===
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     try:
@@ -221,7 +199,6 @@ def search_youtube():
     except Exception as e:
         return jsonify({"error": f"YouTube error: {str(e)}"}), 500
 
-# === DASHBOARD ===
 @app.route("/dashboard")
 def dashboard():
     token = request.args.get("token", "")
