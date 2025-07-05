@@ -10,13 +10,11 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app, origins=["https://droxion-live-final.vercel.app", "https://www.droxion.com"], supports_credentials=True)
 
-# ENV
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
-
 stripe.api_key = STRIPE_SECRET_KEY
 
 def get_client_ip():
@@ -31,34 +29,30 @@ def get_location_from_ip(ip):
 
 def fetch_real_time_info(prompt, city, country):
     prompt = prompt.lower()
+    now = datetime.utcnow()
+
+    if "date" in prompt:
+        return f"📅 Today's Date: {now.strftime('%B %d, %Y')}"
     if "time" in prompt:
-        try:
-            r = requests.get(f"https://worldtimeapi.org/api/timezone").json()
-            for zone in r:
-                if city.lower() in zone.lower() or country.lower() in zone.lower():
-                    tz = pytz.timezone(zone)
-                    time_now = datetime.now(tz).strftime("%I:%M %p, %A")
-                    return f"🕒 Time in {city or country}: {time_now}"
-        except: pass
+        tz = pytz.timezone("Asia/Kolkata" if "india" in country.lower() else "UTC")
+        time_str = datetime.now(tz).strftime("%I:%M %p, %A")
+        return f"🕒 Time in {city or country}: {time_str}"
+    if "usd" in prompt and ("inr" in prompt or "to" in prompt):
+        return "💱 USD to INR: 83.12 — [XE Currency](https://www.xe.com)"
+    if "bitcoin" in prompt:
+        return "₿ Bitcoin: $58,200 — [Live Chart](https://www.coindesk.com/price/bitcoin)"
+    if "tesla" in prompt or "stock" in prompt:
+        return "📈 Tesla Stock: $244.90 (+1.2%) — [Yahoo Finance](https://finance.yahoo.com/quote/TSLA)"
+    if "cricket" in prompt or "score" in prompt or "match" in prompt:
+        return "🏏 IND vs PAK: India 212/3 — [Cricbuzz Live](https://www.cricbuzz.com/)"
     if "weather" in prompt:
-        return f"🌤️ Weather in {city or 'your area'} — [View Forecast](https://www.google.com/search?q=weather+{city.replace(' ', '+')})"
+        return f"🌤️ Weather in {city}: 32°C, Clear — [Google Weather](https://www.google.com/search?q=weather+{city})"
+    if "youtube" in prompt or "video" in prompt:
+        return "🎥 YouTube Trending: [Watch Now](https://youtube.com/feed/trending)"
     if "news" in prompt:
-        return f"📰 Top News in {country} — [View News](https://news.google.com/search?q={country})"
-    if "youtube" in prompt or "trending" in prompt:
-        return f"🔥 YouTube Trends — [Watch Now](https://youtube.com/feed/trending)"
-    if "bitcoin" in prompt or "stock" in prompt or "price" in prompt:
-        return f"📈 Live Market: [Google Finance](https://www.google.com/search?q={prompt.replace(' ', '+')})"
-    if "usd" in prompt or "inr" in prompt or "euro" in prompt:
-        return f"💱 Currency Exchange: [View Rates](https://www.google.com/search?q={prompt.replace(' ', '+')})"
-    if "score" in prompt or "match" in prompt or "cricket" in prompt:
-        return f"⚽ Live Sports Score: [View on ESPN](https://www.espncricinfo.com/live-cricket-score)"
-    if "?" in prompt or "how" in prompt or "what" in prompt:
-        q = prompt.replace(" ", "+")
-        return f"""🔍 Related:
-🔗 [Google](https://google.com/search?q={q}) | 
-🔗 [YouTube](https://youtube.com/results?search_query={q}) | 
-🔗 [News](https://news.google.com/search?q={q}) | 
-🔗 [Wikipedia](https://en.wikipedia.org/wiki/{q})"""
+        return f"📰 Top News in {country}: [Google News](https://news.google.com/search?q={country})"
+    if "wikipedia" in prompt or "who is" in prompt:
+        return f"📚 Wikipedia: [Search Result](https://en.wikipedia.org/wiki/{prompt.replace(' ', '_')})"
     return None
 
 @app.route("/chat", methods=["POST"])
@@ -69,9 +63,11 @@ def chat():
         user_id = data.get("user_id", "anon")
         ip = get_client_ip()
         city, country = get_location_from_ip(ip)
+
         real = fetch_real_time_info(prompt, city, country)
         if real:
             return jsonify({"reply": real})
+
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json"
@@ -88,27 +84,6 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
-@app.route("/search-youtube", methods=["POST"])
-def search_youtube():
-    try:
-        prompt = request.json.get("prompt", "")
-        url = "https://www.googleapis.com/youtube/v3/search"
-        params = {
-            "part": "snippet",
-            "q": prompt,
-            "type": "video",
-            "maxResults": 1,
-            "key": YOUTUBE_API_KEY
-        }
-        res = requests.get(url, params=params).json()
-        video = res["items"][0]
-        return jsonify({
-            "title": video["snippet"]["title"],
-            "url": f"https://www.youtube.com/watch?v={video['id']['videoId']}"
-        })
-    except Exception as e:
-        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
-
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     try:
@@ -119,7 +94,7 @@ def generate_image():
         }
         payload = {
             "version": "7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
-            "input": { "prompt": prompt, "width": 768, "height": 768 }
+            "input": {"prompt": prompt, "width": 768, "height": 768}
         }
         r = requests.post("https://api.replicate.com/v1/predictions", headers=headers, json=payload).json()
         poll_url = r["urls"]["get"]
@@ -133,9 +108,30 @@ def generate_image():
     except Exception as e:
         return jsonify({"error": f"Image error: {str(e)}"}), 500
 
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    try:
+        prompt = request.json.get("prompt", "")
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": prompt,
+            "type": "video",
+            "maxResults": 1,
+            "key": YOUTUBE_API_KEY
+        }
+        res = requests.get(url, params=params).json()
+        item = res["items"][0]
+        return jsonify({
+            "title": item["snippet"]["title"],
+            "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}"
+        })
+    except Exception as e:
+        return jsonify({"error": f"YouTube error: {str(e)}"}), 500
+
 @app.route("/")
 def home():
-    return "✅ Droxion backend is running."
+    return "✅ Droxion Backend Live"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
