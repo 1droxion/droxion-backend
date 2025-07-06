@@ -15,74 +15,77 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+
 stripe.api_key = STRIPE_SECRET_KEY
 
-def get_client_ip():
-    return request.headers.get("X-Forwarded-For", request.remote_addr)
+@app.route("/realtime", methods=["POST"])
+def realtime():
+    prompt = request.json.get("prompt", "").lower()
+    user_id = request.json.get("user_id", "anon")
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+    city, country = get_location_from_ip(ip)
+    now = datetime.now(pytz.timezone("Asia/Kolkata"))
+
+    suggestions = []
+    cards = []
+    reply = ""
+
+    if "news" in prompt:
+        news = requests.get("https://newsapi.org/v2/top-headlines", params={
+            "country": "in" if "india" in prompt else "us",
+            "apiKey": os.getenv("NEWS_API_KEY")
+        }).json()
+        for article in news.get("articles", [])[:3]:
+            cards.append(f"""
+            <div class='border border-gray-600 p-3 rounded-xl my-2 max-w-xl'>
+              <div class='text-sm font-bold'>📰 {article['title']}</div>
+              <div class='text-xs text-gray-400 mb-1'>{article['source']['name']}</div>
+              <img src='{article['urlToImage']}' class='w-full max-w-sm my-2 rounded-lg'/>
+              <a href='{article['url']}' class='text-blue-400 underline'>Read Full</a>
+            </div>
+            """)
+        reply = f"Top News from Google News in {country}:"
+        suggestions = ["world news", "elon musk news", "crypto news"]
+
+    elif "weather" in prompt:
+        weather = requests.get("https://api.openweathermap.org/data/2.5/weather", params={
+            "q": city or "Tupelo",
+            "appid": os.getenv("WEATHER_API_KEY"),
+            "units": "metric"
+        }).json()
+        desc = weather['weather'][0]['description']
+        temp = weather['main']['temp']
+        reply = f"🌤️ Weather in {city or country}: {temp}°C, {desc}"
+        suggestions = ["7 day forecast", "weather tomorrow"]
+
+    elif "stock" in prompt or "tesla" in prompt:
+        data = requests.get("https://query1.finance.yahoo.com/v7/finance/quote", params={"symbols": "TSLA"}).json()
+        quote = data['quoteResponse']['result'][0]
+        price = quote['regularMarketPrice']
+        change = quote['regularMarketChangePercent']
+        reply = f"📈 Tesla Stock: ${price} ({change:.2f}%) — Yahoo Finance"
+        suggestions = ["apple stock", "meta stock", "microsoft stock"]
+
+    elif "usd" in prompt and ("inr" in prompt or "to" in prompt):
+        fx = requests.get("https://v6.exchangerate-api.com/v6/YOUR_API_KEY/latest/USD").json()
+        inr = fx["conversion_rates"].get("INR")
+        reply = f"💱 USD to INR: ₹{inr} (Live) — XE.com"
+        suggestions = ["usd to euro", "btc to usd"]
+
+    elif "time" in prompt:
+        reply = f"🕒 Time Now: {now.strftime('%I:%M %p')} ({now.strftime('%-m/%-d/%Y')})"
+
+    else:
+        reply = "I couldn't find a live preview, but you can try searching more directly."
+
+    return jsonify({"reply": reply, "cards": cards, "suggestions": suggestions})
 
 def get_location_from_ip(ip):
     try:
-        res = requests.get(f"http://ip-api.com/json/{ip}").json()
-        return res.get("city", ""), res.get("country", "")
+        res = requests.get(f"http://ip-api.com/json/{ip.split(',')[0].strip()}").json()
+        return res.get("city", "Tupelo"), res.get("country", "USA")
     except:
-        return "", ""
-
-def fetch_real_time_info(prompt, city, country):
-    prompt = prompt.lower()
-    now = datetime.utcnow()
-
-    if "date" in prompt:
-        return f"📅 Today's Date: {now.strftime('%B %d, %Y')}"
-    if "time" in prompt:
-        tz = pytz.timezone("Asia/Kolkata" if "india" in country.lower() else "UTC")
-        time_str = datetime.now(tz).strftime("%I:%M %p, %A")
-        return f"🕒 Time in {city or country}: {time_str}"
-    if "usd" in prompt and ("inr" in prompt or "to" in prompt):
-        return "💱 USD to INR: 83.12 — [XE Currency](https://www.xe.com)"
-    if "bitcoin" in prompt:
-        return "₿ Bitcoin: $58,200 — [Live Chart](https://www.coindesk.com/price/bitcoin)"
-    if "tesla" in prompt or "stock" in prompt:
-        return "📈 Tesla Stock: $244.90 (+1.2%) — [Yahoo Finance](https://finance.yahoo.com/quote/TSLA)"
-    if "cricket" in prompt or "score" in prompt or "match" in prompt:
-        return "🏏 IND vs PAK: India 212/3 — [Cricbuzz Live](https://www.cricbuzz.com/)"
-    if "weather" in prompt:
-        return f"🌤️ Weather in {city}: 32°C, Clear — [Google Weather](https://www.google.com/search?q=weather+{city})"
-    if "youtube" in prompt or "video" in prompt:
-        return "🎥 YouTube Trending: [Watch Now](https://youtube.com/feed/trending)"
-    if "news" in prompt:
-        return f"📰 Top News in {country}: [Google News](https://news.google.com/search?q={country})"
-    if "wikipedia" in prompt or "who is" in prompt:
-        return f"📚 Wikipedia: [Search Result](https://en.wikipedia.org/wiki/{prompt.replace(' ', '_')})"
-    return None
-
-@app.route("/chat", methods=["POST"])
-def chat():
-    try:
-        data = request.json
-        prompt = data.get("prompt", "")
-        user_id = data.get("user_id", "anon")
-        ip = get_client_ip()
-        city, country = get_location_from_ip(ip)
-
-        real = fetch_real_time_info(prompt, city, country)
-        if real:
-            return jsonify({"reply": real})
-
-        headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": "gpt-4",
-            "messages": [
-                {"role": "system", "content": "You are Droxion AI Assistant."},
-                {"role": "user", "content": prompt}
-            ]
-        }
-        res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload).json()
-        return jsonify({"reply": res["choices"][0]["message"]["content"]})
-    except Exception as e:
-        return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+        return "Tupelo", "USA"
 
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
