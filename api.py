@@ -1,8 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-import os, requests, json, time
-import re
+import os, requests, json, time, re
 from datetime import datetime
 import pytz
 import stripe
@@ -10,7 +9,7 @@ import stripe
 load_dotenv()
 app = Flask(__name__)
 
-# ✅ Regex-based CORS to support all Vercel preview URLs
+# ✅ Regex-based CORS for all Vercel previews + main domain
 CORS(app, origins=[
     re.compile(r"^https:\/\/droxion-live-final.*\.vercel\.app$"),
     "https://www.droxion.com"
@@ -24,6 +23,8 @@ REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 EXCHANGERATE_API_KEY = os.getenv("EXCHANGERATE_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 
 stripe.api_key = STRIPE_SECRET_KEY
 
@@ -42,7 +43,7 @@ def chat():
     if "news" in prompt:
         news = requests.get("https://newsapi.org/v2/top-headlines", params={
             "country": "in" if "india" in prompt else "us",
-            "apiKey": os.getenv("NEWS_API_KEY")
+            "apiKey": NEWS_API_KEY
         }).json()
         for article in news.get("articles", [])[:3]:
             cards.append(f"""
@@ -59,7 +60,7 @@ def chat():
     elif "weather" in prompt:
         weather = requests.get("https://api.openweathermap.org/data/2.5/weather", params={
             "q": city or "Tupelo",
-            "appid": os.getenv("WEATHER_API_KEY"),
+            "appid": WEATHER_API_KEY,
             "units": "metric"
         }).json()
         desc = weather['weather'][0]['description']
@@ -123,10 +124,9 @@ def chat():
 
     return jsonify({"reply": reply, "cards": cards, "suggestions": suggestions})
 
-
 def generate_elevenlabs_audio(text):
     try:
-        api_key = os.getenv("ELEVENLABS_API_KEY")
+        api_key = ELEVENLABS_API_KEY
         headers = {
             "xi-api-key": api_key,
             "Content-Type": "application/json"
@@ -141,7 +141,7 @@ def generate_elevenlabs_audio(text):
         filename = f"voice_{int(time.time())}.mp3"
         with open(filename, "wb") as f:
             f.write(res.content)
-        return f"https://your-cdn.com/audio/{filename}"
+        return f"https://your-cdn.com/audio/{filename}"  # Change to real public URL if needed
     except Exception as e:
         return ""
 
