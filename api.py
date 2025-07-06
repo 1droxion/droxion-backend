@@ -8,7 +8,13 @@ import stripe
 
 load_dotenv()
 app = Flask(__name__)
-CORS(app, origins=["https://droxion-live-final.vercel.app", "https://www.droxion.com"], supports_credentials=True)
+
+# ✅ Fixed: Allow both main + Vercel preview URL
+CORS(app, origins=[
+    "https://droxion-live-final.vercel.app",
+    "https://droxion-live-final-cuhb-git-main-suchitbhai-g-patel.vercel.app",
+    "https://www.droxion.com"
+], supports_credentials=True)
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
