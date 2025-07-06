@@ -11,7 +11,11 @@ import stripe
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, origins=["https://droxion-live-final.vercel.app"], supports_credentials=True)
+CORS(app, origins=[
+    "https://droxion-live-final.vercel.app",
+    "https://www.droxion.com",
+    "https://droxion.com"
+], supports_credentials=True)
 
 # === ENV VARS ===
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
