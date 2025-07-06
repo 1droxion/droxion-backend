@@ -1,33 +1,51 @@
-# Byte-compiled / optimized / DLL files
+# === Python bytecode ===
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Environment variables and secret keys
+# === Environment files ===
 .env
+.env.*
 
-# Logs and user data
-user_logs.json
-
-# MacOS / Windows
-.DS_Store
-Thumbs.db
-
-# VSCode / PyCharm / JetBrains
-.vscode/
-.idea/
-
-# Virtual environment
+# === Virtual environments ===
 venv/
-.env/
 .venv/
 
-# Flask cache
+# === Flask instance folder ===
 instance/
 *.db
 
-# PIP dependency logs
+# === Logs & user data ===
+user_logs.json
+*.log
+
+# === OS-specific ===
+.DS_Store
+Thumbs.db
+
+# === Editor folders ===
+.vscode/
+.idea/
+
+# === Compiled shared libraries ===
+*.so
+
+# === PyInstaller output ===
+dist/
+build/
+*.spec
+
+# === Coverage reports ===
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# === Jupyter notebook checkpoints ===
+.ipynb_checkpoints/
+
+# === Pip dependency logs ===
 pip-log.txt
 
-# Compiled binary
-*.so
+# === Cache ===
+__pypackages__/
