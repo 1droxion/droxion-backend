@@ -1,7 +1,8 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-import os, requests, json, time, re
+import os, requests, json, time
+import re
 from datetime import datetime
 import pytz
 import stripe
@@ -11,7 +12,7 @@ app = Flask(__name__)
 
 # ✅ Regex-based CORS to support all Vercel preview URLs
 CORS(app, origins=[
-    r"^https:\/\/droxion-live-final.*\.vercel\.app$",
+    re.compile(r"^https:\/\/droxion-live-final.*\.vercel\.app$"),
     "https://www.droxion.com"
 ], supports_credentials=True)
 
