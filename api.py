@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-import os, requests, json, time
+import os, requests, json, time, re
 from datetime import datetime
 import pytz
 import stripe
@@ -9,10 +9,9 @@ import stripe
 load_dotenv()
 app = Flask(__name__)
 
-# ✅ Correct CORS for all Vercel + domain deploys
+# ✅ Regex-based CORS to support all Vercel preview URLs
 CORS(app, origins=[
-    "https://droxion-live-final.vercel.app",
-    "https://droxion-live-final-cuhb-git-main-suchitbhai-g-patel.vercel.app",
+    r"^https:\/\/droxion-live-final.*\.vercel\.app$",
     "https://www.droxion.com"
 ], supports_credentials=True)
 
@@ -27,8 +26,8 @@ ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
 stripe.api_key = STRIPE_SECRET_KEY
 
-@app.route("/realtime", methods=["POST"])
-def realtime():
+@app.route("/chat", methods=["POST"])
+def chat():
     prompt = request.json.get("prompt", "").lower()
     user_id = request.json.get("user_id", "anon")
     ip = request.headers.get("X-Forwarded-For", request.remote_addr)
@@ -123,6 +122,7 @@ def realtime():
 
     return jsonify({"reply": reply, "cards": cards, "suggestions": suggestions})
 
+
 def generate_elevenlabs_audio(text):
     try:
         api_key = os.getenv("ELEVENLABS_API_KEY")
@@ -140,7 +140,7 @@ def generate_elevenlabs_audio(text):
         filename = f"voice_{int(time.time())}.mp3"
         with open(filename, "wb") as f:
             f.write(res.content)
-        return f"https://your-cdn.com/audio/{filename}"  # replace with S3 or real URL
+        return f"https://your-cdn.com/audio/{filename}"
     except Exception as e:
         return ""
 
