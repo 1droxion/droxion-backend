@@ -1,15 +1,20 @@
 {
-  "name": "droxion-backend",
+  "name": "droxion-frontend",
   "version": "1.0.0",
-  "type": "module",
-  "main": "webhook-server.js",
+  "private": true,
   "scripts": {
-    "start": "node webhook-server.js"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
-    "body-parser": "^1.20.2",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "stripe": "^12.0.0"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.14.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.0.0",
+    "vite": "^5.0.0",
+    "vite-plugin-pwa": "^0.16.4"
   }
 }
