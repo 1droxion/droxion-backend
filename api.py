@@ -6,16 +6,17 @@ from datetime import datetime
 import pytz
 import stripe
 
+# === Load env vars ===
 load_dotenv()
 app = Flask(__name__)
 
-# ✅ Allow all Vercel preview domains + main site
+# === Allow frontend
 CORS(app, origins=[
     re.compile(r"^https:\/\/droxion-live-final.*\.vercel\.app$"),
     "https://www.droxion.com"
 ], supports_credentials=True)
 
-# === ENV Vars ===
+# === ENV Vars
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -37,9 +38,9 @@ def chat():
     city, country = get_location_from_ip(ip)
     now = datetime.now(pytz.timezone("Asia/Kolkata"))
 
-    suggestions = []
-    cards = []
     reply = ""
+    cards = []
+    suggestions = []
 
     try:
         if "news" in prompt:
@@ -47,11 +48,12 @@ def chat():
                 "country": "in" if "india" in prompt else "us",
                 "apiKey": NEWS_API_KEY
             }).json()
+            articles = news.get("articles", [])[:3]
             card_items = []
-            for article in news.get("articles", [])[:3]:
+            for article in articles:
                 card_items.append(f"""
                 <div class='border border-gray-600 p-2 rounded-xl w-[300px]'>
-                  <div class='text-sm font-bold line-clamp-2'>📰 {article['title']}</div>
+                  <div class='text-sm font-bold'>📰 {article['title']}</div>
                   <div class='text-xs text-gray-400 mb-1'>{article['source']['name']}</div>
                   <img src='{article['urlToImage']}' class='w-full h-40 object-cover my-2 rounded-lg'/>
                   <a href='{article['url']}' class='text-blue-400 underline'>Read Full</a>
@@ -71,10 +73,10 @@ def chat():
                 data = res.json()
                 desc = data['weather'][0]['description']
                 temp = data['main']['temp']
-                reply = f"\ud83c\udf24\ufe0f Weather in {city}: {temp}\u00b0C, {desc}"
+                reply = f"🌤️ Weather in {city}: {temp}°C, {desc}"
                 suggestions = ["7 day forecast", "weather tomorrow"]
             else:
-                reply = "\u274c Error: Weather info not available"
+                reply = "❌ Error: Weather info not available"
 
         elif "stock" in prompt or "tesla" in prompt:
             res = requests.get("https://query1.finance.yahoo.com/v7/finance/quote", params={"symbols": "TSLA"})
@@ -86,7 +88,7 @@ def chat():
                 cards.append(f"""
                 <div class='flex gap-3 flex-wrap'>
                   <div class='border border-gray-600 p-3 rounded-xl w-[300px]'>
-                    <div class='text-sm font-bold'>\ud83d\udcc8 Tesla Stock: ${price} ({change:.2f}%)</div>
+                    <div class='text-sm font-bold'>📈 Tesla Stock: ${price} ({change:.2f}%)</div>
                     <div class='text-xs text-gray-400'>Yahoo Finance</div>
                   </div>
                 </div>
@@ -94,12 +96,12 @@ def chat():
                 reply = "Here's the latest Tesla stock info."
                 suggestions = ["apple stock", "meta stock", "microsoft stock"]
             else:
-                reply = "\u274c Error: Stock data not available"
+                reply = "❌ Error: Stock data not available"
 
         elif "usd" in prompt and ("inr" in prompt or "to" in prompt):
             fx = requests.get(f"https://v6.exchangerate-api.com/v6/{EXCHANGERATE_API_KEY}/latest/USD").json()
             inr = fx["conversion_rates"].get("INR")
-            reply = f"\ud83d\udcb1 USD to INR: \u20b9{inr} \u2014 Live via ExchangeRate API"
+            reply = f"💱 USD to INR: ₹{inr} — Live via ExchangeRate API"
             suggestions = ["usd to euro", "btc to usd"]
 
         elif "crypto" in prompt or "bitcoin" in prompt:
@@ -107,10 +109,10 @@ def chat():
             if r.ok:
                 data = r.json()
                 price = data.get('bitcoin', {}).get('usd')
-                reply = f"\ud83e\ude99 Bitcoin Price: ${price} \u2014 via CoinGecko" if price else "\u274c Error: Price not available"
+                reply = f"🪙 Bitcoin Price: ${price} — via CoinGecko" if price else "❌ Error: Price not available"
                 suggestions = ["ethereum price", "dogecoin live", "crypto market"]
             else:
-                reply = "\u274c Error: Crypto data failed"
+                reply = "❌ Error: Crypto data failed"
 
         elif "youtube" in prompt or "trending" in prompt:
             yt = requests.get("https://www.googleapis.com/youtube/v3/search", params={
@@ -120,29 +122,35 @@ def chat():
                 "maxResults": 1,
                 "key": YOUTUBE_API_KEY
             }).json()
-            video = yt["items"][0]
-            title = video["snippet"]["title"]
-            video_id = video["id"]["videoId"]
-            reply = f"\ud83d\udd25 YouTube Trending: {title}"
-            cards.append(f"""
-            <div class='flex gap-3 flex-wrap'>
-              <div class='border border-gray-600 p-2 rounded-xl w-[300px]'>
-                <iframe width="100%" height="180" src="https://www.youtube.com/embed/{video_id}" 
-                  frameborder="0" allowfullscreen class='rounded-lg'></iframe>
-              </div>
-            </div>
-            """)
-            suggestions = ["trending in India", "top music", "viral video"]
+            if yt.get("items"):
+                video = yt["items"][0]
+                title = video["snippet"]["title"]
+                video_id = video["id"]["videoId"]
+                reply = f"🔥 YouTube Trending: {title}"
+                cards.append(f"""
+                <div class='flex gap-3 flex-wrap'>
+                  <div class='border border-gray-600 p-2 rounded-xl w-[300px]'>
+                    <iframe width="100%" height="180" src="https://www.youtube.com/embed/{video_id}" 
+                      frameborder="0" allowfullscreen class='rounded-lg'></iframe>
+                  </div>
+                </div>
+                """)
+                suggestions = ["trending in India", "top music", "viral video"]
+            else:
+                reply = "⚠️ No trending videos found."
 
         elif "time" in prompt:
-            reply = f"\ud83d\udd52 Time Now: {now.strftime('%I:%M %p')} ({now.strftime('%-m/%-d/%Y')})"
+            reply = f"🕒 Time Now: {now.strftime('%I:%M %p')} ({now.strftime('%-m/%-d/%Y')})"
             suggestions = ["date today", "current time", "clock"]
 
         else:
             reply = openrouter_fallback(prompt)
 
     except Exception as e:
-        reply = f"\u274c Error: {str(e)}"
+        reply = f"❌ Error: {str(e)}"
+
+    if not reply:
+        reply = "⚠️ No live result found. Try again with something more specific."
 
     return jsonify({"reply": reply, "cards": cards, "suggestions": suggestions})
 
@@ -161,7 +169,7 @@ def openrouter_fallback(prompt):
         data = res.json()
         return data['choices'][0]['message']['content']
     except:
-        return "\u26a0\ufe0f No live result found. Try again with something more specific."
+        return "⚠️ No live result found. Try again with something more specific."
 
 def get_location_from_ip(ip):
     try:
@@ -172,7 +180,7 @@ def get_location_from_ip(ip):
 
 @app.route("/")
 def home():
-    return "\u2705 Droxion Backend Live"
+    return "✅ Droxion Backend Live"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
