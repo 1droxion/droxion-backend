@@ -11,7 +11,11 @@ import stripe
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, origins="*", supports_credentials=True)
+CORS(app, origins=[
+    "https://droxion.com",
+    "https://www.droxion.com",
+    "https://droxion-live-final.vercel.app"
+], supports_credentials=True)
 
 # === ENV VARS ===
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
@@ -160,6 +164,5 @@ def chat():
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
 
-# ✅ Needed for Render to detect and bind port
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
