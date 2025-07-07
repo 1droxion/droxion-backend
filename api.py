@@ -11,7 +11,7 @@ import stripe
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, origins=[
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
     "https://droxion-live-final.vercel.app",
     "https://www.droxion.com",
     "https://droxion.com"
