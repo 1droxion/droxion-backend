@@ -55,7 +55,7 @@ def log_user_action(user_id, action, input_text, ip):
     logs = []
     if os.path.exists(LOG_FILE):
         try:
-            with open(LOG_FILE, "r") as f:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
                 logs = json.load(f)
         except:
             logs = []
@@ -67,7 +67,7 @@ def log_user_action(user_id, action, input_text, ip):
         "ip": ip,
         "location": location
     })
-    with open(LOG_FILE, "w") as f:
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, indent=2)
 
 @app.route("/")
@@ -105,10 +105,7 @@ def chat():
             if res.get("main"):
                 desc = res["weather"][0]["description"].title()
                 temp = res["main"]["temp"]
-                cards.append(f"""<div class='border border-gray-600 p-3 rounded-xl max-w-xs'>
-                  <div class='font-bold text-sm'>🌦️ Weather in {city}</div>
-                  <div class='text-sm mt-1'>{desc}, {temp}°C</div>
-                </div>""")
+                cards.append(f"<div class='border border-gray-600 p-3 rounded-xl max-w-xs'><div class='font-bold text-sm'>🌦️ Weather in {city}</div><div class='text-sm mt-1'>{desc}, {temp}°C</div></div>")
                 reply = f"Weather in {city}"
                 suggestions = ["7 day forecast", "weather tomorrow"]
 
@@ -119,12 +116,7 @@ def chat():
                 "apiKey": NEWS_API_KEY
             }).json()
             for article in res.get("articles", [])[:3]:
-                cards.append(f"""<div class='border border-gray-600 p-3 rounded-xl max-w-xs'>
-                  <div class='font-bold text-sm'>📰 {article['title']}</div>
-                  <div class='text-xs text-gray-400 mb-1'>{article['source']['name']}</div>
-                  <img src='{article['urlToImage']}' class='w-full h-40 object-cover my-2 rounded-lg'/>
-                  <a href='{article['url']}' class='text-blue-400 underline'>Read Full</a>
-                </div>""")
+                cards.append(f"<div class='border border-gray-600 p-3 rounded-xl max-w-xs'><div class='font-bold text-sm'>📰 {article['title']}</div><div class='text-xs text-gray-400 mb-1'>{article['source']['name']}</div><img src='{article['urlToImage']}' class='w-full h-40 object-cover my-2 rounded-lg'/><a href='{article['url']}' class='text-blue-400 underline'>Read Full</a></div>")
             reply = "Top News"
             suggestions = ["crypto news", "tech news", "elon news"]
 
@@ -143,18 +135,12 @@ def chat():
         elif "stock" in prompt or "tesla" in prompt:
             r = requests.get("https://query1.finance.yahoo.com/v7/finance/quote", params={"symbols": "TSLA"}).json()
             q = r.get("quoteResponse", {}).get("result", [{}])[0]
-            cards.append(f"""<div class='border border-gray-600 p-3 rounded-xl max-w-xs'>
-              <div class='font-bold text-sm'>📈 {q.get('longName', 'Tesla')}: ${q.get('regularMarketPrice')}</div>
-              <div class='text-xs text-gray-400'>TSLA • {q.get('marketState')}</div>
-            </div>""")
+            cards.append(f"<div class='border border-gray-600 p-3 rounded-xl max-w-xs'><div class='font-bold text-sm'>📈 {q.get('longName', 'Tesla')}: ${q.get('regularMarketPrice')}</div><div class='text-xs text-gray-400'>TSLA • {q.get('marketState')}</div></div>")
             reply = "Tesla Stock Info"
             suggestions = ["apple stock", "meta stock"]
 
         elif "score" in prompt or "match" in prompt:
-            cards.append(f"""<div class='border border-gray-600 p-3 rounded-xl max-w-xs'>
-              <div class='font-bold text-sm'>🏏 India vs Pakistan</div>
-              <div class='text-sm mt-1'>India: 298/7 (50) • Pak: 145/3 (32)</div>
-            </div>""")
+            cards.append("<div class='border border-gray-600 p-3 rounded-xl max-w-xs'><div class='font-bold text-sm'>🏏 India vs Pakistan</div><div class='text-sm mt-1'>India: 298/7 (50) • Pak: 145/3 (32)</div></div>")
             reply = "Live Match Score"
             suggestions = ["india match", "world cup", "live football"]
 
@@ -167,12 +153,7 @@ def chat():
             }).json()
             if res.get("items"):
                 top = res["items"][0]
-                cards.append(f"""<div class='border border-gray-600 p-3 rounded-xl max-w-xs'>
-                  <div class='font-bold text-sm'>{top.get("title")}</div>
-                  <div class='text-xs text-gray-400'>{top.get("displayLink")}</div>
-                  <p class='text-sm my-1'>{top.get("snippet")}</p>
-                  <a href='{top.get("link")}' class='text-blue-400 underline'>Visit</a>
-                </div>""")
+                cards.append(f"<div class='border border-gray-600 p-3 rounded-xl max-w-xs'><div class='font-bold text-sm'>{top.get('title')}</div><div class='text-xs text-gray-400'>{top.get('displayLink')}</div><p class='text-sm my-1'>{top.get('snippet')}</p><a href='{top.get('link')}' class='text-blue-400 underline'>Visit</a></div>")
                 reply = f"Search result for: {q}"
                 suggestions = ["wikipedia", "youtube", "openai"]
 
@@ -182,3 +163,7 @@ def chat():
         return jsonify({"reply": reply, "cards": cards, "suggestions": suggestions})
     except Exception as e:
         return jsonify({"reply": f"❌ Error: {str(e)}"}), 500
+
+# ✅ Required for Render to detect your server port
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
