@@ -7,6 +7,7 @@ from collections import Counter
 from dateutil import parser
 import pytz
 import stripe
+from bs4 import BeautifulSoup
 
 load_dotenv()
 
@@ -288,6 +289,56 @@ def dashboard():
         locations=dict(location_count.most_common(3)),
         logs=logs[-100:]
     )
+
+# ✅ New: Real-time scraping routes (no API)
+@app.route("/realtime/weather", methods=["POST"])
+def realtime_weather():
+    city = request.json.get("city", "Mumbai")
+    try:
+        url = f"https://www.google.com/search?q=weather+in+{city.replace(' ', '+')}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        temp = soup.find("span", class_="wob_t").text
+        condition = soup.find("span", id="wob_dc").text
+        return jsonify({"city": city, "temp": temp + "°C", "condition": condition})
+    except Exception as e:
+        return jsonify({"error": f"Weather fetch error: {str(e)}"}), 500
+
+@app.route("/realtime/news", methods=["POST"])
+def realtime_news():
+    topic = request.json.get("topic", "world")
+    try:
+        url = f"https://news.google.com/search?q={topic}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, "html.parser")
+        headlines = [h.text for h in soup.select("article h3")][:5]
+        return jsonify({"topic": topic, "headlines": headlines})
+    except Exception as e:
+        return jsonify({"error": f"News fetch error: {str(e)}"}), 500
+
+@app.route("/realtime/stock", methods=["POST"])
+def realtime_stock():
+    ticker = request.json.get("ticker", "AAPL")
+    try:
+        url = f"https://www.google.com/finance/quote/{ticker}:NASDAQ"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, "html.parser")
+        price = soup.select_one(".YMlKec.fxKbKc").text
+        return jsonify({"ticker": ticker, "price": price})
+    except Exception as e:
+        return jsonify({"error": f"Stock fetch error: {str(e)}"}), 500
+
+@app.route("/realtime/time", methods=["POST"])
+def realtime_time():
+    city = request.json.get("city", "UTC")
+    try:
+        now = datetime.utcnow().strftime("%A, %d %B %Y – %I:%M %p UTC")
+        return jsonify({"city": city, "time": now})
+    except Exception as e:
+        return jsonify({"error": f"Time fetch error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
