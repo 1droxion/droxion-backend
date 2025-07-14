@@ -14,4 +14,4 @@ pytz
 requests
 stripe
 tqdm
-beautifulsoup4   ✅ ← add this line
+beautifulsoup4
