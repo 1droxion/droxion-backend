@@ -15,3 +15,4 @@ requests
 stripe
 tqdm
 beautifulsoup4
+replicate
