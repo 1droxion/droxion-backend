@@ -75,7 +75,7 @@ def chat():
             "Content-Type": "application/json"
         }
         data = {
-            "model": "openai/gpt-4o",  # You can switch to mistralai/mixtral if needed
+            "model": "openai/gpt-4o",
             "messages": [{"role": "user", "content": prompt}]
         }
 
@@ -90,10 +90,10 @@ def chat():
             return jsonify({ "reply": "❌ AI Error." })
 
     except Exception as e:
-        print("Chat error:", str(e))
+        print("🔥 Chat error:", str(e))
         return jsonify({ "reply": "❌ AI Error." })
 
-# --- Image Generation with Replicate ---
+# --- Image Generation with Replicate + Debug ---
 @app.route('/generate-image', methods=['POST'])
 def generate_image():
     try:
@@ -101,19 +101,20 @@ def generate_image():
         if not prompt:
             return jsonify({"error": "No prompt provided"}), 400
 
+        print("Generating image with prompt:", prompt)
         output = replicate.run(
             "stability-ai/stable-diffusion:db21e45c84ed9171f63fdf4c4f6f3e5cbff9283c3e6c525e65e13c5c44f7d447",
             input={"prompt": prompt}
         )
+        print("Replicate output:", output)
 
         if isinstance(output, list) and output and output[0].startswith("http"):
             return jsonify({ "image_url": output[0] })
         else:
-            print("Replicate output invalid:", output)
-            return jsonify({ "error": "❌ No image returned from model" })
+            return jsonify({ "error": "Invalid image output" }), 500
 
     except Exception as e:
-        print("Image error:", str(e))
+        print("🔥 Image generation error:", str(e))
         return jsonify({ "error": str(e) }), 500
 
 # --- YouTube Search ---
@@ -138,7 +139,7 @@ def youtube():
         return jsonify({ "error": "No video found" }), 404
 
     except Exception as e:
-        print("YouTube error:", str(e))
+        print("🔥 YouTube error:", str(e))
         return jsonify({ "error": "YouTube failed" }), 500
 
 # --- Launch ---
