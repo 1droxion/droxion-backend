@@ -16,21 +16,44 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
-    prompt = data.get("prompt", "")
+    prompt = data.get("prompt", "").strip()
     voice_mode = data.get("voiceMode", False)
 
     lower = prompt.lower()
     reply = ""
 
-    # --- Real-time date/time ---
-    if any(t in lower for t in ["time", "current time"]):
+    # --- SMART RESPONSES ---
+    if lower.startswith("stock:"):
+        stock = lower.replace("stock:", "").strip().upper()
+        reply = f"📈 <b>{stock} Live Stock:</b><br><iframe src='https://www.google.com/finance/quote/{stock}:NASDAQ' width='100%' height='200' frameborder='0'></iframe>"
+
+    elif lower.startswith("crypto:"):
+        coin = lower.replace("crypto:", "").strip().upper()
+        reply = f"💰 <b>{coin} Live Crypto:</b><br><iframe src='https://www.google.com/search?q={coin}+price' width='100%' height='150' frameborder='0'></iframe>"
+
+    elif "time in" in lower:
+        try:
+            city = lower.split("time in")[-1].strip().title()
+            now = datetime.datetime.now(pytz.timezone("US/Central"))
+            reply = f"🕒 Current time in {city}: {now.strftime('%I:%M %p')}"
+        except:
+            reply = "🕒 Couldn't fetch time for that location."
+
+    elif "weather" in lower:
+        city = lower.split("weather")[-1].strip().title()
+        reply = f"⛅ Live weather in {city}:<br><iframe src='https://www.google.com/search?q=weather+in+{city}' width='100%' height='150' frameborder='0'></iframe>"
+
+    elif "news" in lower:
+        reply = "📰 Latest Headlines:<br>• AI breakthroughs in 2025<br>• Markets show global volatility<br>• Climate targets spark debates"
+
+    elif any(t in lower for t in ["time", "current time"]):
         now = datetime.datetime.now(pytz.timezone("US/Central"))
         reply = f"🕒 Current time: {now.strftime('%I:%M %p')}"
+
     elif any(t in lower for t in ["date", "today"]):
         today = datetime.datetime.now(pytz.timezone("US/Central"))
         reply = f"📅 Today's date: {today.strftime('%A, %B %d, %Y')}"
-    elif "news" in lower:
-        reply = "📰 Here are the latest news highlights:\n\n• Global markets see mild recovery\n• AI continues to dominate innovation headlines\n• New economic reforms in discussion globally"
+
     else:
         try:
             response = client.chat.completions.create(
