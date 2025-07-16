@@ -11,7 +11,12 @@ app = Flask(__name__)
 CORS(app)
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# ----------- ROUTE: CHAT -----------
+# Function to get current time with user timezone
+def get_time(timezone="US/Central"):
+    now = datetime.datetime.now(pytz.timezone(timezone))
+    return now.strftime('%I:%M %p')
+
+# ----------- ROUTE: CHAT ----------- 
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
@@ -23,8 +28,7 @@ def chat():
 
     # --- Real-time date/time ---
     if any(t in lower for t in ["time", "current time"]):
-        now = datetime.datetime.now(pytz.timezone("US/Central"))
-        reply = f"🕒 Current time: {now.strftime('%I:%M %p')}"
+        reply = f"🕒 Current time: {get_time()}"
     elif any(t in lower for t in ["date", "today"]):
         today = datetime.datetime.now(pytz.timezone("US/Central"))
         reply = f"📅 Today's date: {today.strftime('%A, %B %d, %Y')}"
@@ -32,20 +36,26 @@ def chat():
         reply = "Here are the latest news highlights:\n\nPolitics: Following recent elections, a new party is set to take power, promising renewed efforts towards climate change and healthcare reform."
     else:
         try:
-            completion = openai.ChatCompletion.create(
-                model="gpt-4",
-                messages=[{"role": "system", "content": "You're a helpful assistant."}, {"role": "user", "content": prompt}]
-            )
-            reply = completion.choices[0].message.content
+            # OpenAI completion handling
+            if not prompt.strip():  # Handle empty prompt
+                reply = "⚠️ Please enter a valid prompt!"
+            else:
+                completion = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    messages=[{"role": "system", "content": "You're a helpful assistant."}, {"role": "user", "content": prompt}]
+                )
+                reply = completion.choices[0].message.content
+
+            # If the prompt asks for creator info
             if "who" in lower and any(x in lower for x in ["made", "created", "owner", "built"]):
                 reply = "I was created and managed by **Dhruv Patel**, powered by OpenAI."
-        except:
-            reply = "Sorry, something went wrong."
+        except Exception as e:
+            reply = f"⚠️ Error occurred: {str(e)}"
 
     return jsonify({"reply": reply})
 
 
-# ----------- ROUTE: TRACK -----------
+# ----------- ROUTE: TRACK ----------- 
 @app.route("/track", methods=["POST"])
 def track():
     data = request.json
@@ -63,7 +73,7 @@ def track():
     return jsonify({"status": "ok"})
 
 
-# ----------- ROUTE: GENERATE IMAGE -----------
+# ----------- ROUTE: GENERATE IMAGE ----------- 
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -83,11 +93,11 @@ def generate_image():
         result = response.json()
         image_url = result["urls"]["get"] if "urls" in result else ""
         return jsonify({"image_url": image_url})
-    except:
-        return jsonify({"error": "Image generation failed"})
+    except Exception as e:
+        return jsonify({"error": f"Image generation failed: {str(e)}"})
 
 
-# ----------- ROUTE: YOUTUBE SEARCH -----------
+# ----------- ROUTE: YOUTUBE SEARCH ----------- 
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     data = request.json
@@ -101,11 +111,12 @@ def search_youtube():
             video_id = vid["id"]["videoId"]
             title = vid["snippet"]["title"]
             return jsonify({"url": f"https://www.youtube.com/watch?v={video_id}", "title": title})
-    except:
-        pass
+    except Exception as e:
+        return jsonify({"error": f"YouTube search failed: {str(e)}"})
+
     return jsonify({"error": "No video found"})
 
 
-# ----------- MAIN -----------
+# ----------- MAIN ----------- 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
