@@ -1,11 +1,10 @@
-elevenlabs
 flask
 flask-cors
 gunicorn
 ipinfo
 moviepy
 numpy
-openai
+openai>=1.0.0
 pexels_api
 Pillow
 python-dateutil
