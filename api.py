@@ -40,9 +40,14 @@ def chat():
                     {"role": "user", "content": prompt}
                 ]
             )
-            reply = response.choices[0].message.content
+            if response.choices and response.choices[0].message.content:
+                reply = response.choices[0].message.content
+            else:
+                reply = "⚠️ No reply from AI. Please try again."
+
             if "who" in lower and any(x in lower for x in ["made", "created", "owner", "built"]):
                 reply = "I was created and managed by **Dhruv Patel**, powered by OpenAI."
+
         except Exception as e:
             reply = f"⚠️ Error occurred: {str(e)}"
 
