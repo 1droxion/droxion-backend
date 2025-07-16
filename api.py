@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import openai
+from openai import OpenAI
 import requests
 import datetime
 import pytz
@@ -9,12 +9,8 @@ import json
 
 app = Flask(__name__)
 CORS(app)
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Function to get current time with user timezone
-def get_time(timezone="US/Central"):
-    now = datetime.datetime.now(pytz.timezone(timezone))
-    return now.strftime('%I:%M %p')
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ----------- ROUTE: CHAT ----------- 
 @app.route("/chat", methods=["POST"])
@@ -28,25 +24,23 @@ def chat():
 
     # --- Real-time date/time ---
     if any(t in lower for t in ["time", "current time"]):
-        reply = f"🕒 Current time: {get_time()}"
+        now = datetime.datetime.now(pytz.timezone("US/Central"))
+        reply = f"🕒 Current time: {now.strftime('%I:%M %p')}"
     elif any(t in lower for t in ["date", "today"]):
         today = datetime.datetime.now(pytz.timezone("US/Central"))
         reply = f"📅 Today's date: {today.strftime('%A, %B %d, %Y')}"
     elif "news" in lower:
-        reply = "Here are the latest news highlights:\n\nPolitics: Following recent elections, a new party is set to take power, promising renewed efforts towards climate change and healthcare reform."
+        reply = "📰 Here are the latest news highlights:\n\n• Global markets see mild recovery\n• AI continues to dominate innovation headlines\n• New economic reforms in discussion globally"
     else:
         try:
-            # OpenAI completion handling
-            if not prompt.strip():  # Handle empty prompt
-                reply = "⚠️ Please enter a valid prompt!"
-            else:
-                completion = openai.ChatCompletion.create(
-                    model="gpt-4",
-                    messages=[{"role": "system", "content": "You're a helpful assistant."}, {"role": "user", "content": prompt}]
-                )
-                reply = completion.choices[0].message.content
-
-            # If the prompt asks for creator info
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You're a helpful assistant."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            reply = response.choices[0].message.content
             if "who" in lower and any(x in lower for x in ["made", "created", "owner", "built"]):
                 reply = "I was created and managed by **Dhruv Patel**, powered by OpenAI."
         except Exception as e:
