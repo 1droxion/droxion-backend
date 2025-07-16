@@ -6,6 +6,7 @@ import datetime
 import pytz
 import os
 import json
+import time
 
 app = Flask(__name__)
 CORS(app)
@@ -113,7 +114,22 @@ def generate_image():
             }
         )
         result = response.json()
-        image_url = result["urls"]["get"] if "urls" in result else ""
+        prediction_url = result.get("urls", {}).get("get")
+        image_url = ""
+
+        if prediction_url:
+            for _ in range(20):
+                poll = requests.get(prediction_url, headers={
+                    "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}"
+                }).json()
+                status = poll.get("status")
+                if status == "succeeded":
+                    image_url = poll.get("output")[0] if poll.get("output") else ""
+                    break
+                elif status == "failed":
+                    break
+                time.sleep(1)
+
         return jsonify({"image_url": image_url})
     except Exception as e:
         return jsonify({"error": f"Image generation failed: {str(e)}"})
