@@ -1,157 +1,224 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openai import OpenAI
-import os, json, datetime, pytz, requests
+import requests
+import datetime
+import pytz
+import os
+import json
+import time
 
 app = Flask(__name__)
 CORS(app)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ---------- MEMORY ----------
+# ----------------- AGI MEMORY -------------------
 def load_memory():
     try:
         with open("memory.json", "r") as f:
             return json.load(f)
     except:
-        return {"name": "", "goals": [], "facts": []}
+        return {}
 
 def save_memory(memory):
     with open("memory.json", "w") as f:
         json.dump(memory, f, indent=2)
 
-# ---------- AGENT TASK RUNNER ----------
-def run_agent_step(goal):
-    prompt = f"What is the first step to achieve: {goal}? Just give the answer."
-    res = client.chat.completions.create(
-        model="gpt-4", messages=[{"role": "user", "content": prompt}]
-    )
-    step = res.choices[0].message.content.strip()
-    return step
-
-# ---------- AUTO-LEARN PHASE ----------
-def learn_new_fact(fact):
-    memory = load_memory()
-    if fact not in memory["facts"]:
-        memory["facts"].append(fact)
-        save_memory(memory)
-
-# ---------- CHAT ROUTE ----------
+# --------------- ROUTE: /chat -------------------
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
     prompt = data.get("prompt", "").strip()
+    if not prompt:
+        return jsonify({"reply": "⚠️ Empty prompt."})
+
     voice_mode = data.get("voiceMode", False)
-    memory = load_memory()
+    lower = prompt.lower()
     reply = ""
 
-    # --- SMART COMMANDS ---
-    if prompt.lower().startswith("remember my name"):
-        memory["name"] = prompt.replace("remember my name", "").strip()
-        save_memory(memory)
-        return jsonify({"reply": f"✅ Got it. I'll remember: *my name {memory['name']}*."})
+    # --- Smart Responses ---
+    if lower.startswith("stock:"):
+        stock = lower.replace("stock:", "").strip().upper()
+        reply = f"📈 <b>{stock} Live Stock:</b><br><iframe src='https://www.google.com/finance/quote/{stock}:NASDAQ' width='100%' height='200'></iframe>"
+    elif lower.startswith("crypto:"):
+        coin = lower.replace("crypto:", "").strip().upper()
+        reply = f"💰 <b>{coin} Live Crypto:</b><br><iframe src='https://www.google.com/search?q={coin}+price' width='100%' height='150'></iframe>"
+    elif "time in" in lower:
+        city = lower.split("time in")[-1].strip().title()
+        now = datetime.datetime.now(pytz.timezone("US/Central"))
+        reply = f"🕒 Current time in {city}: {now.strftime('%I:%M %p')}"
+    elif "weather" in lower:
+        city = lower.split("weather")[-1].strip().title()
+        reply = f"⛅ Weather in {city}:<br><iframe src='https://www.google.com/search?q=weather+in+{city}' width='100%' height='150'></iframe>"
+    elif "news" in lower:
+        reply = "📰 Latest Headlines:<br>• AI breakthroughs in 2025<br>• Markets show global volatility<br>• Climate targets spark debates"
+    elif "date" in lower:
+        today = datetime.datetime.now(pytz.timezone("US/Central"))
+        reply = f"📅 Today is {today.strftime('%A, %B %d, %Y')}"
+    else:
+        try:
+            memory = load_memory()
+            history = [
+                {"role": "system", "content": f"User memory: {json.dumps(memory)}"},
+                {"role": "user", "content": prompt}
+            ]
+            res = client.chat.completions.create(
+                model="gpt-4",
+                messages=history
+            )
+            reply = res.choices[0].message.content
+        except Exception as e:
+            reply = f"⚠️ AI Error: {str(e)}"
 
-    if prompt.lower() in ["my name", "what's my name?"]:
-        return jsonify({"reply": f"Your name is {memory['name']}"})
+    return jsonify({"reply": reply})
 
-    if prompt.lower().startswith("my goal is"):
-        goal = prompt.replace("my goal is", "").strip()
-        if goal not in memory["goals"]:
-            memory["goals"].append(goal)
-            save_memory(memory)
-        return jsonify({"reply": f"✅ Goal saved: *{goal}*."})
 
-    if prompt.lower() == "my goals":
-        if memory["goals"]:
-            return jsonify({"reply": "🎯 Your goals:\n- " + "\n- ".join(memory["goals"])})
-        else:
-            return jsonify({"reply": "You have no saved goals."})
+# ------------- AGI MEMORY WRITE -----------------
+@app.route("/remember", methods=["POST"])
+def remember():
+    data = request.json
+    key = data.get("key")
+    value = data.get("value")
+    memory = load_memory()
+    memory[key] = value
+    save_memory(memory)
+    return jsonify({"message": f"✅ Got it. I’ll remember: {key} = {value}"})
 
-    if prompt.lower().startswith("remember this:"):
-        fact = prompt.replace("remember this:", "").strip()
-        learn_new_fact(fact)
-        return jsonify({"reply": f"🧠 Learned: *{fact}*"})
 
-    if prompt.lower() == "my facts":
-        if memory["facts"]:
-            return jsonify({"reply": "📚 Your facts:\n- " + "\n- ".join(memory["facts"])})
-        else:
-            return jsonify({"reply": "No facts saved yet."})
+# --------- AGI PHASE 3: AGENT EXECUTOR ----------
+@app.route("/agent", methods=["POST"])
+def agent():
+    data = request.json
+    step = data.get("step")
+    goal = data.get("goal")
 
-    # --- AGENT MODE ---
-    if prompt.lower() == "run agent":
-        if not memory["goals"]:
-            return jsonify({"reply": "⚠️ No goals set. Use `my goal is ...` first."})
-        goal = memory["goals"][0]
-        step = run_agent_step(goal)
-        return jsonify({"reply": f"🤖 Auto-step for *{goal}*:\n`{step}`"})
-
-    # --- GPT CHAT ---
-    messages = [{"role": "system", "content": f"You are an advanced AGI assistant helping {memory['name']}."}]
-    messages.append({"role": "user", "content": prompt})
+    if not step or not goal:
+        return jsonify({"error": "Missing step or goal."})
 
     try:
         res = client.chat.completions.create(
             model="gpt-4",
-            messages=messages
+            messages=[
+                {"role": "system", "content": f"Execute: {step} for goal: {goal}"},
+                {"role": "user", "content": step}
+            ]
         )
-        reply = res.choices[0].message.content.strip()
+        output = res.choices[0].message.content
+        log = {
+            "goal": goal,
+            "step": step,
+            "result": output,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        with open("tasks.json", "a") as f:
+            f.write(json.dumps(log) + "\n")
+        return jsonify({"result": output})
     except Exception as e:
-        reply = f"⚠️ Error from AI. Try again.\n\n{str(e)}"
+        return jsonify({"error": f"⚠️ Agent failed: {str(e)}"})
 
-    return jsonify({"reply": reply})
 
-# ---------- IMAGE ANALYSIS (PHASE 7: MULTIMODAL VISION) ----------
-@app.route("/analyze", methods=["POST"])
-def analyze_image():
+# -------------- PHASE 4: /learn ------------------
+@app.route("/learn", methods=["POST"])
+def learn():
     data = request.json
-    image_url = data.get("image")
-    prompt = data.get("prompt", "What’s in this image?")
+    feedback = data.get("feedback", "").strip()
+    if not feedback:
+        return jsonify({"error": "Feedback is empty"})
+
+    memory = load_memory()
     try:
         res = client.chat.completions.create(
-            model="gpt-4-vision-preview",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_url}}
-                ]
-            }],
-            max_tokens=500
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": f"Current memory: {json.dumps(memory)}"},
+                {"role": "user", "content": f"Update memory based on this: {feedback}"}
+            ]
         )
-        content = res.choices[0].message.content.strip()
-        return jsonify({"reply": content})
+        new_memory = res.choices[0].message.content
+        try:
+            parsed = json.loads(new_memory)
+            save_memory(parsed)
+            return jsonify({"message": "✅ Learned and updated memory."})
+        except:
+            return jsonify({"reply": new_memory})
     except Exception as e:
-        return jsonify({"reply": f"❌ Vision error: {e}"}), 500
+        return jsonify({"error": f"Learning failed: {str(e)}"})
 
-# ---------- IMAGE GENERATION ----------
+
+# ---------- IMAGE GENERATION (REPLIT) ------------
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
-    prompt = data.get("prompt", "")
-    style = data.get("style", "Realistic")
+    prompt = data.get("prompt")
     try:
-        res = requests.post(
+        response = requests.post(
             "https://api.replicate.com/v1/predictions",
             headers={
-                "Authorization": f"Token {os.getenv('REPLIT_API_KEY')}",
+                "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}",
                 "Content-Type": "application/json"
             },
             json={
-                "version": "YOUR_REPLIT_MODEL_VERSION",  # replace if needed
-                "input": {
-                    "prompt": f"{prompt}, {style}, 8k highly detailed",
-                    "width": 512,
-                    "height": 512
-                }
+                "version": "db21e45a-df6d-4845-90c5-6e1f01b16f3f",
+                "input": {"prompt": prompt}
             }
         )
-        output = res.json()
-        image_url = output.get("prediction", {}).get("output", [""])[-1]
-        return jsonify({"image": image_url})
+        result = response.json()
+        prediction_url = result.get("urls", {}).get("get")
+        image_url = ""
+        if prediction_url:
+            for _ in range(20):
+                poll = requests.get(prediction_url, headers={
+                    "Authorization": f"Token {os.getenv('REPLICATE_API_TOKEN')}"
+                }).json()
+                if poll.get("status") == "succeeded":
+                    image_url = poll.get("output")[0]
+                    break
+                elif poll.get("status") == "failed":
+                    break
+                time.sleep(1)
+        return jsonify({"image_url": image_url})
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return jsonify({"error": f"Image generation failed: {str(e)}"})
 
-# ---------- MAIN ----------
+
+# --------------- YOUTUBE SEARCH ------------------
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    data = request.json
+    prompt = data.get("prompt")
+    try:
+        query = prompt.replace("YouTube", "").strip()
+        search_url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&q={query}&key={os.getenv('YOUTUBE_API_KEY')}"
+        res = requests.get(search_url).json()
+        if res["items"]:
+            vid = res["items"][0]
+            video_id = vid["id"]["videoId"]
+            title = vid["snippet"]["title"]
+            return jsonify({"url": f"https://www.youtube.com/watch?v={video_id}", "title": title})
+    except Exception as e:
+        return jsonify({"error": f"YouTube search failed: {str(e)}"})
+    return jsonify({"error": "No video found"})
+
+
+# ----------------- TRACKING ----------------------
+@app.route("/track", methods=["POST"])
+def track():
+    data = request.json
+    log = {
+        "user_id": data.get("user_id"),
+        "action": data.get("action"),
+        "input": data.get("input"),
+        "timestamp": data.get("timestamp")
+    }
+    try:
+        with open("user_logs.json", "a") as f:
+            f.write(json.dumps(log) + "\n")
+    except Exception as e:
+        print("Track log error:", e)
+    return jsonify({"status": "ok"})
+
+
+# -------------- MAIN -----------------------------
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=10000)
