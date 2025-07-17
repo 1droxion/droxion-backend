@@ -5,6 +5,7 @@ import requests, os, json, time, datetime, pytz
 
 app = Flask(__name__)
 CORS(app)
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Load memory
@@ -46,7 +47,7 @@ def chat():
         return jsonify({"reply": f"✅ Got it. I'll remember: *my name {memory['name'].lower()}*."})
 
     if lower in ["my name", "what's my name?"]:
-        return jsonify({"reply": f"Your name is {memory['name']}.")
+        return jsonify({"reply": f"Your name is {memory['name']}."})
 
     if lower.startswith("goal:"):
         goal = prompt.split("goal:",1)[-1].strip()
@@ -114,7 +115,7 @@ def reflect():
     except:
         return jsonify({"reflection": "❌ No task data available."})
 
-# Phase 6: Self-improve (simplified)
+# Phase 6: Self-improve
 @app.route("/improve", methods=["POST"])
 def improve():
     memory = load_memory()
@@ -142,7 +143,7 @@ def analyze_image():
     except Exception as e:
         return jsonify({"error": str(e)})
 
-# Phase 8: Web action
+# Phase 8: Web Search
 @app.route("/search-web", methods=["POST"])
 def search_web():
     q = request.json.get("query")
@@ -154,7 +155,7 @@ def search_web():
     except:
         return jsonify({"result": "❌ Web search failed."})
 
-# Phase 9: Tool use (auto image gen)
+# Phase 9: Tool use — Image generation
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -183,7 +184,7 @@ def generate_image():
     except Exception as e:
         return jsonify({"error": f"Image generation failed: {str(e)}"})
 
-# Phase 10: Autonomy — Self-run mode
+# Phase 10: Autonomy Mode — Auto-run goal
 @app.route("/auto", methods=["POST"])
 def auto():
     memory = load_memory()
@@ -201,6 +202,7 @@ def auto():
     except Exception as e:
         return jsonify({"status": f"❌ Error: {str(e)}"})
 
-# Server start
+# ✅ Start server (Render-compatible)
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
