@@ -1,14 +1,14 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openai import OpenAI
-import requests, os, json, time, datetime, pytz
+import requests, os, json, time
 
 app = Flask(__name__)
 CORS(app)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Load memory
+# --------- MEMORY MANAGEMENT ---------
 def load_memory():
     try:
         with open("memory.json") as f:
@@ -16,12 +16,10 @@ def load_memory():
     except:
         return {"name": "", "goals": [], "facts": []}
 
-# Save memory
 def save_memory(data):
     with open("memory.json", "w") as f:
         json.dump(data, f, indent=2)
 
-# Save task output
 def save_task(step, output):
     try:
         with open("tasks.json", "r") as f:
@@ -32,99 +30,85 @@ def save_task(step, output):
     with open("tasks.json", "w") as f:
         json.dump(tasks, f, indent=2)
 
-# Phase 1–4: Smart response with memory
+# --------- PHASE 1–4: SMART CHAT ---------
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.json
-    prompt = data.get("prompt", "").strip()
-    memory = load_memory()
-    lower = prompt.lower()
-    reply = ""
+    try:
+        data = request.json
+        prompt = data.get("prompt", "").strip()
+        memory = load_memory()
+        lower = prompt.lower()
 
-    if "remember my name" in lower:
-        memory["name"] = prompt.split()[-1].strip().capitalize()
-        save_memory(memory)
-        return jsonify({"reply": f"✅ Got it. I'll remember: *my name {memory['name'].lower()}*."})
+        if "remember my name" in lower:
+            memory["name"] = prompt.split()[-1].strip().capitalize()
+            save_memory(memory)
+            return jsonify({"reply": f"✅ Got it. I'll remember: *my name {memory['name']}*."})
 
-    if lower in ["my name", "what's my name?"]:
-        return jsonify({"reply": f"Your name is {memory['name']}."})
+        if lower in ["my name", "what's my name?"]:
+            return jsonify({"reply": f"Your name is {memory['name']}."})
 
-    if lower.startswith("goal:"):
-        goal = prompt.split("goal:",1)[-1].strip()
-        memory["goals"].append(goal)
-        save_memory(memory)
-        return jsonify({"reply": f"✅ Saved your goal: *{goal}*. I’ll help you achieve it."})
-
-    if "list my goals" in lower:
-        goals = memory.get("goals", [])
-        if not goals:
-            return jsonify({"reply": "❌ No goals saved yet."})
-        reply = "🎯 **Your Goals:**\n" + "\n".join([f"{i+1}. {g}" for i, g in enumerate(goals)])
-        return jsonify({"reply": reply})
-
-    # Phase 2–3: Plan step 1
-    if memory['goals']:
-        current_goal = memory['goals'][-1]
-        try:
+        if lower.startswith("goal:") or lower.startswith("my goal is"):
+            goal = prompt.split("goal:",1)[-1].strip() if "goal:" in lower else prompt.split("my goal is",1)[-1].strip()
+            memory["goals"].append(goal)
+            save_memory(memory)
             response = client.chat.completions.create(
                 model="gpt-4",
                 messages=[
-                    {"role": "system", "content": f"You are Droxion AGI. Memory: {memory}. Help the user reach their goals."},
-                    {"role": "user", "content": f"My current goal: {current_goal}. What is step 1?"}
+                    {"role": "system", "content": f"You are Droxion AGI. Help user achieve goals using memory: {memory}"},
+                    {"role": "user", "content": f"My current goal: {goal}. What is step 1?"}
                 ]
             )
             step1 = response.choices[0].message.content.strip()
             save_task(step1, "(waiting to run)")
-            return jsonify({"reply": f"🧠 Step 1 for *{current_goal}*:\n{step1}"})
-        except Exception as e:
-            return jsonify({"reply": f"⚠️ Error: {str(e)}"})
+            return jsonify({"reply": f"🧠 Step 1 for *{goal}*:\n{step1}"})
 
-    # Fallback: normal chat
-    try:
+        if "list my goals" in lower:
+            goals = memory.get("goals", [])
+            if not goals:
+                return jsonify({"reply": "❌ No goals saved yet."})
+            reply = "🎯 **Your Goals:**\n" + "\n".join([f"{i+1}. {g}" for i, g in enumerate(goals)])
+            return jsonify({"reply": reply})
+
+        # fallback: general AI chat
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[{"role": "user", "content": prompt}]
         )
         reply = response.choices[0].message.content
+        return jsonify({"reply": reply})
     except Exception as e:
-        reply = f"⚠️ Error from AI. Try again."
-    return jsonify({"reply": reply})
+        return jsonify({"reply": f"⚠️ Error: {str(e)}"})
 
-# Phase 4: Auto-Learning
-@app.route("/learn", methods=["POST"])
-def learn():
+# --------- PHASE 1: MEMORY MANUAL ADD ---------
+@app.route("/remember", methods=["POST"])
+def remember():
     data = request.json
-    new_fact = data.get("fact")
+    input_text = data.get("input", "")
     memory = load_memory()
-    if new_fact and new_fact not in memory['facts']:
-        memory['facts'].append(new_fact)
-        save_memory(memory)
-        return jsonify({"status": "✅ Learned new fact."})
-    return jsonify({"status": "⚠️ Fact already known or empty."})
-
-# Phase 5: Reflect on tasks
-@app.route("/reflect", methods=["GET"])
-def reflect():
-    try:
-        with open("tasks.json") as f:
-            tasks = json.load(f)
-        insights = ""
-        for task in tasks:
-            insights += f"- Step: {task['step']}\n  ➤ Output: {task['output']}\n"
-        return jsonify({"reflection": f"🔍 Reflection:\n{insights}"})
-    except:
-        return jsonify({"reflection": "❌ No task data available."})
-
-# Phase 6: Self-improve
-@app.route("/improve", methods=["POST"])
-def improve():
-    memory = load_memory()
-    improved_facts = list(set(memory['facts']))
-    memory['facts'] = improved_facts
+    memory['facts'].append(input_text)
     save_memory(memory)
-    return jsonify({"status": "✅ Facts deduplicated & improved."})
+    return jsonify({"status": "✅ Saved to memory."})
 
-# Phase 7: Multimodal — Vision
+# --------- PHASE 3: AGENT AUTO EXECUTE ---------
+@app.route("/agent", methods=["POST"])
+def agent():
+    data = request.json
+    goal = data.get("goal")
+    step = data.get("step")
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "user", "content": f"Run this task:\nGoal: {goal}\nStep: {step}"}
+            ]
+        )
+        result = response.choices[0].message.content
+        save_task(step, result)
+        return jsonify({"result": result})
+    except Exception as e:
+        return jsonify({"result": f"⚠️ Error: {str(e)}"})
+
+# --------- PHASE 7: IMAGE ANALYSIS (VISION) ---------
 @app.route("/analyze-image", methods=["POST"])
 def analyze_image():
     image_url = request.json.get("url")
@@ -143,19 +127,21 @@ def analyze_image():
     except Exception as e:
         return jsonify({"error": str(e)})
 
-# Phase 8: Web Search
-@app.route("/search-web", methods=["POST"])
-def search_web():
-    q = request.json.get("query")
+# --------- PHASE 8: SEARCH YOUTUBE ---------
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    query = request.json.get("prompt")
     try:
-        url = f"https://www.googleapis.com/customsearch/v1?q={q}&key={os.getenv('GOOGLE_API_KEY')}&cx={os.getenv('SEARCH_ENGINE_ID')}"
+        api_key = os.getenv("GOOGLE_API_KEY")
+        search_id = os.getenv("SEARCH_ENGINE_ID")
+        url = f"https://www.googleapis.com/customsearch/v1?q={query}+site:youtube.com&key={api_key}&cx={search_id}"
         res = requests.get(url).json()
-        top = res['items'][0] if res.get('items') else {}
-        return jsonify({"result": top.get("title", "No title"), "link": top.get("link", "No link")})
-    except:
-        return jsonify({"result": "❌ Web search failed."})
+        item = res["items"][0]
+        return jsonify({"title": item["title"], "url": item["link"]})
+    except Exception as e:
+        return jsonify({"error": f"❌ YouTube error: {str(e)}"})
 
-# Phase 9: Tool use — Image generation
+# --------- PHASE 9: IMAGE GENERATION ---------
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -184,25 +170,7 @@ def generate_image():
     except Exception as e:
         return jsonify({"error": f"Image generation failed: {str(e)}"})
 
-# Phase 10: Autonomy Mode — Auto-run goal
-@app.route("/auto", methods=["POST"])
-def auto():
-    memory = load_memory()
-    if not memory["goals"]:
-        return jsonify({"status": "❌ No goal to run."})
-    goal = memory["goals"][-1]
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": f"Break this down and auto-run: {goal}"}]
-        )
-        plan = response.choices[0].message.content
-        save_task(goal, plan)
-        return jsonify({"status": "✅ AGI has started working on your goal.", "plan": plan})
-    except Exception as e:
-        return jsonify({"status": f"❌ Error: {str(e)}"})
-
-# ✅ Start server (Render-compatible)
+# --------- LAUNCH ---------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
