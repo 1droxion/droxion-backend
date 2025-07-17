@@ -26,11 +26,11 @@ def chat():
     # --- SMART RESPONSES ---
     if lower.startswith("stock:"):
         stock = lower.replace("stock:", "").strip().upper()
-        reply = f"📈 <b>{stock} Live Stock:</b><br><iframe src='https://www.google.com/finance/quote/{stock}:NASDAQ' width='100%' height='200' frameborder='0'></iframe>"
+        reply = f"📈 <b>{stock} Live Stock:</b><br><iframe width='100%' height='200' src='https://www.google.com/finance/quote/{stock}:NASDAQ' frameborder='0'></iframe>"
 
     elif lower.startswith("crypto:"):
         coin = lower.replace("crypto:", "").strip().upper()
-        reply = f"💰 <b>{coin} Live Crypto:</b><br><iframe src='https://www.google.com/search?q={coin}+price' width='100%' height='150' frameborder='0'></iframe>"
+        reply = f"💰 <b>{coin} Live Crypto:</b><br><iframe width='100%' height='150' src='https://www.google.com/search?q={coin}+price' frameborder='0'></iframe>"
 
     elif "time in" in lower:
         try:
@@ -40,12 +40,12 @@ def chat():
         except:
             reply = "🕒 Couldn't fetch time for that location."
 
-    elif "weather" in lower:
-        city = lower.split("weather")[-1].strip().title()
+    elif "weather in" in lower:
+        city = lower.split("weather in")[-1].strip().title()
         reply = f"⛅ Live weather in {city}:<br><iframe src='https://www.google.com/search?q=weather+in+{city}' width='100%' height='150' frameborder='0'></iframe>"
 
     elif "news" in lower:
-        reply = "📰 Latest Headlines:<br>• AI breakthroughs in 2025<br>• Markets show global volatility<br>• Climate targets spark debates"
+        reply = "📰 <b>Latest Headlines:</b><br>• AI breakthroughs in 2025<br>• Markets show global volatility<br>• Climate targets spark debates"
 
     elif any(t in lower for t in ["time", "current time"]):
         now = datetime.datetime.now(pytz.timezone("US/Central"))
@@ -70,7 +70,7 @@ def chat():
                 reply = "⚠️ No reply from AI. Please try again."
 
             if "who" in lower and any(x in lower for x in ["made", "created", "owner", "built"]):
-                reply = "I was created and managed by **Dhruv Patel**, powered by OpenAI."
+                reply += "\n\nI was created and managed by **Dhruv Patel**, powered by OpenAI."
 
         except Exception as e:
             reply = f"⚠️ Error occurred: {str(e)}"
@@ -129,6 +129,9 @@ def generate_image():
                 elif status == "failed":
                     break
                 time.sleep(1)
+
+        if not image_url:
+            image_url = "https://via.placeholder.com/512x512?text=Image+Not+Found"
 
         return jsonify({"image_url": image_url})
     except Exception as e:
