@@ -1,96 +1,96 @@
+# ✅ api.py — AGI Phase 1–3 Backend
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import os, json, time, datetime, requests
 from openai import OpenAI
-import requests
-import datetime
-import pytz
-import os
-import json
-import time
 
 app = Flask(__name__)
 CORS(app)
-
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MEMORY_FILE = "memory.json"
 
-# ---------------- MEMORY ----------------
+# --- Load memory.json ---
+MEMORY_FILE = "memory.json"
+if not os.path.exists(MEMORY_FILE):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump({"name": "Dhruv", "goals": [], "facts": []}, f)
+
 def load_memory():
-    if not os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, "w") as f:
-            json.dump({}, f)
     with open(MEMORY_FILE, "r") as f:
         return json.load(f)
 
-def save_memory(memory):
+def save_memory(data):
     with open(MEMORY_FILE, "w") as f:
-        json.dump(memory, f, indent=2)
+        json.dump(data, f, indent=2)
 
-def update_memory(user_id, key, value):
-    memory = load_memory()
-    if user_id not in memory:
-        memory[user_id] = {"name": "", "goals": [], "facts": []}
+# --- Phase 1: Memory update ---
+@app.route("/remember", methods=["POST"])
+def remember():
+    data = request.json
+    key = data.get("key")
+    value = data.get("value")
+    mem = load_memory()
+
     if key == "name":
-        memory[user_id]["name"] = value
+        mem["name"] = value
     elif key == "goal":
-        if value not in memory[user_id]["goals"]:
-            memory[user_id]["goals"].append(value)
+        mem["goals"].append(value)
     elif key == "fact":
-        if value not in memory[user_id]["facts"]:
-            memory[user_id]["facts"].append(value)
-    save_memory(memory)
+        mem["facts"].append(value)
 
-# ---------------- CHAT ----------------
+    save_memory(mem)
+    return jsonify({"status": "saved"})
+
+# --- Phase 2: Main Chat ---
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
-    prompt = data.get("prompt", "").strip()
-    user_id = data.get("user_id", "anonymous")
-    lower = prompt.lower()
-
+    prompt = data.get("prompt", "")
     memory = load_memory()
-    user_data = memory.get(user_id, {"name": "", "goals": [], "facts": []})
+    name = memory.get("name", "User")
+    goals = memory.get("goals", [])
+    facts = memory.get("facts", [])
 
-    # === Detect memory inputs ===
-    if "my name is" in lower:
-        name = prompt.split("my name is")[-1].strip().split()[0]
-        update_memory(user_id, "name", name)
-        return jsonify({"reply": f"✅ Got it. I’ll remember your name is **{name}**."})
-
-    elif any(x in lower for x in ["i want", "my goal is", "remember i want"]):
-        goal = prompt.split("want")[-1].strip() if "want" in lower else prompt
-        update_memory(user_id, "goal", goal)
-        return jsonify({"reply": f"✅ I saved your goal: **{goal}**."})
-
-    elif "i live in" in lower or "i am a" in lower or "i work at" in lower:
-        update_memory(user_id, "fact", prompt)
-        return jsonify({"reply": f"🧠 I’ve added this fact to memory: **{prompt}**."})
-
-    # === Inject memory ===
-    memory_text = ""
-    if user_data["name"]:
-        memory_text += f"User's name: {user_data['name']}\n"
-    if user_data["goals"]:
-        memory_text += "Goals:\n" + "\n".join([f"- {g}" for g in user_data["goals"]]) + "\n"
-    if user_data["facts"]:
-        memory_text += "Facts:\n" + "\n".join([f"- {f}" for f in user_data["facts"]]) + "\n"
+    context = f"Your name is {name}.\nGoals: {goals}\nKnown facts: {facts}"
 
     try:
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": f"You are a helpful AGI assistant. Here is user context:\n{memory_text}"},
+                {"role": "system", "content": context},
                 {"role": "user", "content": prompt}
             ]
         )
         reply = response.choices[0].message.content
+        return jsonify({"reply": reply})
     except Exception as e:
-        reply = f"⚠️ Error: {str(e)}"
+        return jsonify({"error": str(e)})
 
-    return jsonify({"reply": reply})
+# --- Phase 3: Agent Execution (Step 1 only) ---
+@app.route("/agent", methods=["POST"])
+def agent():
+    memory = load_memory()
+    goals = memory.get("goals", [])
+    if not goals:
+        return jsonify({"task": "No goals set yet."})
 
+    goal = goals[0]
+    try:
+        step_prompt = f"Break this goal into steps and perform the first one: {goal}"
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": step_prompt}]
+        )
+        step_result = response.choices[0].message.content
 
-# ---------------- IMAGE GENERATION ----------------
+        with open("tasks.json", "a") as f:
+            f.write(json.dumps({"goal": goal, "step1_result": step_result}) + "\n")
+
+        return jsonify({"task": step_result})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+# --- Image generation (Replit) ---
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -110,7 +110,6 @@ def generate_image():
         result = response.json()
         prediction_url = result.get("urls", {}).get("get")
         image_url = ""
-
         if prediction_url:
             for _ in range(20):
                 poll = requests.get(prediction_url, headers={
@@ -123,53 +122,28 @@ def generate_image():
                 elif status == "failed":
                     break
                 time.sleep(1)
-
-        if not image_url:
-            image_url = "https://via.placeholder.com/512x512?text=Image+Not+Found"
-
         return jsonify({"image_url": image_url})
     except Exception as e:
-        return jsonify({"error": f"Image generation failed: {str(e)}"})
+        return jsonify({"error": str(e)})
 
-
-# ---------------- YOUTUBE ----------------
+# --- YouTube search ---
 @app.route("/search-youtube", methods=["POST"])
-def search_youtube():
+def search_yt():
     data = request.json
     prompt = data.get("prompt")
+    query = prompt.replace("YouTube", "").strip()
     try:
-        query = prompt.replace("YouTube", "").strip()
-        search_url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&q={query}&key={os.getenv('YOUTUBE_API_KEY')}"
-        res = requests.get(search_url).json()
+        yt_url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&q={query}&key={os.getenv('YOUTUBE_API_KEY')}"
+        res = requests.get(yt_url).json()
         if res["items"]:
             vid = res["items"][0]
-            video_id = vid["id"]["videoId"]
+            vid_id = vid["id"]["videoId"]
             title = vid["snippet"]["title"]
-            return jsonify({"url": f"https://www.youtube.com/watch?v={video_id}", "title": title})
+            return jsonify({"url": f"https://www.youtube.com/watch?v={vid_id}", "title": title})
     except Exception as e:
-        return jsonify({"error": f"YouTube search failed: {str(e)}"})
+        return jsonify({"error": str(e)})
+    return jsonify({"error": "No results found"})
 
-    return jsonify({"error": "No video found"})
-
-
-# ---------------- TRACKING ----------------
-@app.route("/track", methods=["POST"])
-def track():
-    data = request.json
-    log = {
-        "user_id": data.get("user_id"),
-        "action": data.get("action"),
-        "input": data.get("input"),
-        "timestamp": data.get("timestamp")
-    }
-    try:
-        with open("user_logs.json", "a") as f:
-            f.write(json.dumps(log) + "\n")
-    except Exception as e:
-        print("Track log error:", e)
-    return jsonify({"status": "ok"})
-
-
-# ---------------- MAIN ----------------
+# --- Run App ---
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
