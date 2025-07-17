@@ -8,7 +8,6 @@ CORS(app)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# --------- MEMORY MANAGEMENT ---------
 def load_memory():
     try:
         with open("memory.json") as f:
@@ -30,7 +29,6 @@ def save_task(step, output):
     with open("tasks.json", "w") as f:
         json.dump(tasks, f, indent=2)
 
-# --------- PHASE 1–4: SMART CHAT ---------
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -69,17 +67,17 @@ def chat():
             reply = "🎯 **Your Goals:**\n" + "\n".join([f"{i+1}. {g}" for i, g in enumerate(goals)])
             return jsonify({"reply": reply})
 
-        # fallback: general AI chat
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[{"role": "user", "content": prompt}]
         )
         reply = response.choices[0].message.content
         return jsonify({"reply": reply})
+
     except Exception as e:
+        print(f"[ERROR /chat]: {str(e)}")
         return jsonify({"reply": f"⚠️ Error: {str(e)}"})
 
-# --------- PHASE 1: MEMORY MANUAL ADD ---------
 @app.route("/remember", methods=["POST"])
 def remember():
     data = request.json
@@ -89,7 +87,6 @@ def remember():
     save_memory(memory)
     return jsonify({"status": "✅ Saved to memory."})
 
-# --------- PHASE 3: AGENT AUTO EXECUTE ---------
 @app.route("/agent", methods=["POST"])
 def agent():
     data = request.json
@@ -108,26 +105,6 @@ def agent():
     except Exception as e:
         return jsonify({"result": f"⚠️ Error: {str(e)}"})
 
-# --------- PHASE 7: IMAGE ANALYSIS (VISION) ---------
-@app.route("/analyze-image", methods=["POST"])
-def analyze_image():
-    image_url = request.json.get("url")
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4-vision-preview",
-            messages=[
-                {"role": "user", "content": [
-                    {"type": "text", "text": "Analyze this image."},
-                    {"type": "image_url", "image_url": {"url": image_url}}
-                ]}
-            ],
-            max_tokens=500
-        )
-        return jsonify({"analysis": res.choices[0].message.content})
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
-# --------- PHASE 8: SEARCH YOUTUBE ---------
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     query = request.json.get("prompt")
@@ -141,7 +118,6 @@ def search_youtube():
     except Exception as e:
         return jsonify({"error": f"❌ YouTube error: {str(e)}"})
 
-# --------- PHASE 9: IMAGE GENERATION ---------
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -170,7 +146,19 @@ def generate_image():
     except Exception as e:
         return jsonify({"error": f"Image generation failed: {str(e)}"})
 
-# --------- LAUNCH ---------
+@app.route("/track", methods=["POST"])
+def track():
+    data = request.json
+    log = {
+        "timestamp": time.time(),
+        "ip": request.remote_addr,
+        "type": data.get("type"),
+        "message": data.get("message", "")
+    }
+    with open("user_logs.json", "a") as f:
+        f.write(json.dumps(log) + "\n")
+    return jsonify({"status": "✅ Tracked"})
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
