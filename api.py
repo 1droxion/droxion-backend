@@ -14,7 +14,7 @@ CORS(app)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MEMORY_FILE = "memory.json"
 
-# ----------------- MEMORY LOGIC ------------------
+# ---------------- MEMORY ----------------
 def load_memory():
     if not os.path.exists(MEMORY_FILE):
         with open(MEMORY_FILE, "w") as f:
@@ -26,40 +26,60 @@ def save_memory(memory):
     with open(MEMORY_FILE, "w") as f:
         json.dump(memory, f, indent=2)
 
-def update_user_memory(user_id, goal):
+def update_memory(user_id, key, value):
     memory = load_memory()
     if user_id not in memory:
-        memory[user_id] = {"goals": []}
-    if goal not in memory[user_id]["goals"]:
-        memory[user_id]["goals"].append(goal)
+        memory[user_id] = {"name": "", "goals": [], "facts": []}
+    if key == "name":
+        memory[user_id]["name"] = value
+    elif key == "goal":
+        if value not in memory[user_id]["goals"]:
+            memory[user_id]["goals"].append(value)
+    elif key == "fact":
+        if value not in memory[user_id]["facts"]:
+            memory[user_id]["facts"].append(value)
     save_memory(memory)
 
-# ------------------ CHAT ROUTE -------------------
+# ---------------- CHAT ----------------
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
     prompt = data.get("prompt", "").strip()
     user_id = data.get("user_id", "anonymous")
-
-    memory = load_memory()
-    user_memory = memory.get(user_id, {"goals": []})
     lower = prompt.lower()
 
-    # Save new goal to memory
-    if lower.startswith("remember") or "my goal is" in lower:
-        goal = prompt.replace("remember", "").replace("my goal is", "").strip()
-        update_user_memory(user_id, goal)
-        return jsonify({"reply": f"✅ Got it. I’ll remember: *{goal}*."})
+    memory = load_memory()
+    user_data = memory.get(user_id, {"name": "", "goals": [], "facts": []})
 
-    # Inject memory into system prompt
-    goals = user_memory.get("goals", [])
-    system_context = "This user has the following goals:\n" + "\n".join(f"- {g}" for g in goals) if goals else "No saved goals yet."
+    # === Detect memory inputs ===
+    if "my name is" in lower:
+        name = prompt.split("my name is")[-1].strip().split()[0]
+        update_memory(user_id, "name", name)
+        return jsonify({"reply": f"✅ Got it. I’ll remember your name is **{name}**."})
+
+    elif any(x in lower for x in ["i want", "my goal is", "remember i want"]):
+        goal = prompt.split("want")[-1].strip() if "want" in lower else prompt
+        update_memory(user_id, "goal", goal)
+        return jsonify({"reply": f"✅ I saved your goal: **{goal}**."})
+
+    elif "i live in" in lower or "i am a" in lower or "i work at" in lower:
+        update_memory(user_id, "fact", prompt)
+        return jsonify({"reply": f"🧠 I’ve added this fact to memory: **{prompt}**."})
+
+    # === Inject memory ===
+    memory_text = ""
+    if user_data["name"]:
+        memory_text += f"User's name: {user_data['name']}\n"
+    if user_data["goals"]:
+        memory_text += "Goals:\n" + "\n".join([f"- {g}" for g in user_data["goals"]]) + "\n"
+    if user_data["facts"]:
+        memory_text += "Facts:\n" + "\n".join([f"- {f}" for f in user_data["facts"]]) + "\n"
 
     try:
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": f"You are a helpful AI assistant.\n{system_context}"},
+                {"role": "system", "content": f"You are a helpful AGI assistant. Here is user context:\n{memory_text}"},
                 {"role": "user", "content": prompt}
             ]
         )
@@ -70,7 +90,7 @@ def chat():
     return jsonify({"reply": reply})
 
 
-# ------------------ IMAGE GENERATION -------------------
+# ---------------- IMAGE GENERATION ----------------
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -112,7 +132,7 @@ def generate_image():
         return jsonify({"error": f"Image generation failed: {str(e)}"})
 
 
-# ------------------ YOUTUBE SEARCH -------------------
+# ---------------- YOUTUBE ----------------
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     data = request.json
@@ -132,7 +152,7 @@ def search_youtube():
     return jsonify({"error": "No video found"})
 
 
-# ------------------ TRACKING -------------------
+# ---------------- TRACKING ----------------
 @app.route("/track", methods=["POST"])
 def track():
     data = request.json
@@ -150,6 +170,6 @@ def track():
     return jsonify({"status": "ok"})
 
 
-# ------------------ MAIN -------------------
+# ---------------- MAIN ----------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
