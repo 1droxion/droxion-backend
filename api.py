@@ -12,91 +12,65 @@ app = Flask(__name__)
 CORS(app)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+MEMORY_FILE = "memory.json"
 
-# ----------- ROUTE: CHAT ----------- 
+# ----------------- MEMORY LOGIC ------------------
+def load_memory():
+    if not os.path.exists(MEMORY_FILE):
+        with open(MEMORY_FILE, "w") as f:
+            json.dump({}, f)
+    with open(MEMORY_FILE, "r") as f:
+        return json.load(f)
+
+def save_memory(memory):
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(memory, f, indent=2)
+
+def update_user_memory(user_id, goal):
+    memory = load_memory()
+    if user_id not in memory:
+        memory[user_id] = {"goals": []}
+    if goal not in memory[user_id]["goals"]:
+        memory[user_id]["goals"].append(goal)
+    save_memory(memory)
+
+# ------------------ CHAT ROUTE -------------------
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.json
     prompt = data.get("prompt", "").strip()
-    voice_mode = data.get("voiceMode", False)
+    user_id = data.get("user_id", "anonymous")
 
+    memory = load_memory()
+    user_memory = memory.get(user_id, {"goals": []})
     lower = prompt.lower()
-    reply = ""
 
-    # --- SMART RESPONSES ---
-    if lower.startswith("stock:"):
-        stock = lower.replace("stock:", "").strip().upper()
-        reply = f"📈 <b>{stock} Live Stock:</b><br><iframe width='100%' height='200' src='https://www.google.com/finance/quote/{stock}:NASDAQ' frameborder='0'></iframe>"
+    # Save new goal to memory
+    if lower.startswith("remember") or "my goal is" in lower:
+        goal = prompt.replace("remember", "").replace("my goal is", "").strip()
+        update_user_memory(user_id, goal)
+        return jsonify({"reply": f"✅ Got it. I’ll remember: *{goal}*."})
 
-    elif lower.startswith("crypto:"):
-        coin = lower.replace("crypto:", "").strip().upper()
-        reply = f"💰 <b>{coin} Live Crypto:</b><br><iframe width='100%' height='150' src='https://www.google.com/search?q={coin}+price' frameborder='0'></iframe>"
+    # Inject memory into system prompt
+    goals = user_memory.get("goals", [])
+    system_context = "This user has the following goals:\n" + "\n".join(f"- {g}" for g in goals) if goals else "No saved goals yet."
 
-    elif "time in" in lower:
-        try:
-            city = lower.split("time in")[-1].strip().title()
-            now = datetime.datetime.now(pytz.timezone("US/Central"))
-            reply = f"🕒 Current time in {city}: {now.strftime('%I:%M %p')}"
-        except:
-            reply = "🕒 Couldn't fetch time for that location."
-
-    elif "weather in" in lower:
-        city = lower.split("weather in")[-1].strip().title()
-        reply = f"⛅ Live weather in {city}:<br><iframe src='https://www.google.com/search?q=weather+in+{city}' width='100%' height='150' frameborder='0'></iframe>"
-
-    elif "news" in lower:
-        reply = "📰 <b>Latest Headlines:</b><br>• AI breakthroughs in 2025<br>• Markets show global volatility<br>• Climate targets spark debates"
-
-    elif any(t in lower for t in ["time", "current time"]):
-        now = datetime.datetime.now(pytz.timezone("US/Central"))
-        reply = f"🕒 Current time: {now.strftime('%I:%M %p')}"
-
-    elif any(t in lower for t in ["date", "today"]):
-        today = datetime.datetime.now(pytz.timezone("US/Central"))
-        reply = f"📅 Today's date: {today.strftime('%A, %B %d, %Y')}"
-
-    else:
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You're a helpful assistant."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            if response.choices and response.choices[0].message.content:
-                reply = response.choices[0].message.content
-            else:
-                reply = "⚠️ No reply from AI. Please try again."
-
-            if "who" in lower and any(x in lower for x in ["made", "created", "owner", "built"]):
-                reply += "\n\nI was created and managed by **Dhruv Patel**, powered by OpenAI."
-
-        except Exception as e:
-            reply = f"⚠️ Error occurred: {str(e)}"
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": f"You are a helpful AI assistant.\n{system_context}"},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        reply = response.choices[0].message.content
+    except Exception as e:
+        reply = f"⚠️ Error: {str(e)}"
 
     return jsonify({"reply": reply})
 
 
-# ----------- ROUTE: TRACK ----------- 
-@app.route("/track", methods=["POST"])
-def track():
-    data = request.json
-    log = {
-        "user_id": data.get("user_id"),
-        "action": data.get("action"),
-        "input": data.get("input"),
-        "timestamp": data.get("timestamp")
-    }
-    try:
-        with open("user_logs.json", "a") as f:
-            f.write(json.dumps(log) + "\n")
-    except Exception as e:
-        print("Track log error:", e)
-    return jsonify({"status": "ok"})
-
-
-# ----------- ROUTE: GENERATE IMAGE ----------- 
+# ------------------ IMAGE GENERATION -------------------
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -138,7 +112,7 @@ def generate_image():
         return jsonify({"error": f"Image generation failed: {str(e)}"})
 
 
-# ----------- ROUTE: YOUTUBE SEARCH ----------- 
+# ------------------ YOUTUBE SEARCH -------------------
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     data = request.json
@@ -158,6 +132,24 @@ def search_youtube():
     return jsonify({"error": "No video found"})
 
 
-# ----------- MAIN ----------- 
+# ------------------ TRACKING -------------------
+@app.route("/track", methods=["POST"])
+def track():
+    data = request.json
+    log = {
+        "user_id": data.get("user_id"),
+        "action": data.get("action"),
+        "input": data.get("input"),
+        "timestamp": data.get("timestamp")
+    }
+    try:
+        with open("user_logs.json", "a") as f:
+            f.write(json.dumps(log) + "\n")
+    except Exception as e:
+        print("Track log error:", e)
+    return jsonify({"status": "ok"})
+
+
+# ------------------ MAIN -------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
