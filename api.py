@@ -7,6 +7,7 @@ import pytz
 import os
 import json
 import time
+import base64
 
 app = Flask(__name__)
 CORS(app)
@@ -30,35 +31,59 @@ def save_memory(memory):
 def chat():
     data = request.json
     prompt = data.get("prompt", "").strip()
-    if not prompt:
-        return jsonify({"reply": "⚠️ Empty prompt."})
+    image_base64 = data.get("image_base64")
+    save_to_memory = data.get("save_memory", False)
+    persona = data.get("persona")
+    user_id = data.get("user_id") or "unknown"
 
-    voice_mode = data.get("voiceMode", False)
-    lower = prompt.lower()
+    memory = load_memory()
     reply = ""
 
-    # --- Smart Responses ---
-    if lower.startswith("stock:"):
-        stock = lower.replace("stock:", "").strip().upper()
-        reply = f"📈 <b>{stock} Live Stock:</b><br><iframe src='https://www.google.com/finance/quote/{stock}:NASDAQ' width='100%' height='200'></iframe>"
-    elif lower.startswith("crypto:"):
-        coin = lower.replace("crypto:", "").strip().upper()
-        reply = f"💰 <b>{coin} Live Crypto:</b><br><iframe src='https://www.google.com/search?q={coin}+price' width='100%' height='150'></iframe>"
-    elif "time in" in lower:
-        city = lower.split("time in")[-1].strip().title()
-        now = datetime.datetime.now(pytz.timezone("US/Central"))
-        reply = f"🕒 Current time in {city}: {now.strftime('%I:%M %p')}"
-    elif "weather" in lower:
-        city = lower.split("weather")[-1].strip().title()
+    # GPT-4 Vision Mode
+    if image_base64:
+        try:
+            res = client.chat.completions.create(
+                model="gpt-4-vision-preview",
+                messages=[
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "Analyze this image and explain what's inside."},
+                        {"type": "image_url", "image_url": {"url": image_base64}}
+                    ]}
+                ],
+                max_tokens=1000
+            )
+            reply = res.choices[0].message.content
+        except Exception as e:
+            reply = f"⚠️ Vision error: {str(e)}"
+
+    # Smart preview responses
+    elif prompt.lower().startswith("stock:"):
+        stock = prompt.replace("stock:", "").strip().upper()
+        reply = f"📈 <b>{stock} Stock:</b><br><iframe src='https://www.google.com/finance/quote/{stock}:NASDAQ' width='100%' height='200'></iframe>"
+
+    elif prompt.lower().startswith("crypto:"):
+        coin = prompt.replace("crypto:", "").strip().upper()
+        reply = f"💰 <b>{coin} Price:</b><br><iframe src='https://www.google.com/search?q={coin}+price' width='100%' height='150'></iframe>"
+
+    elif "weather" in prompt.lower():
+        city = prompt.split("weather")[-1].strip().title()
         reply = f"⛅ Weather in {city}:<br><iframe src='https://www.google.com/search?q=weather+in+{city}' width='100%' height='150'></iframe>"
-    elif "news" in lower:
-        reply = "📰 Latest Headlines:<br>• AI breakthroughs in 2025<br>• Markets show global volatility<br>• Climate targets spark debates"
-    elif "date" in lower:
+
+    elif "time in" in prompt.lower():
+        city = prompt.split("time in")[-1].strip().title()
+        now = datetime.datetime.now(pytz.timezone("US/Central"))
+        reply = f"🕒 Time in {city}: {now.strftime('%I:%M %p')}"
+
+    elif "news" in prompt.lower():
+        reply = "📰 Headlines:<br>• AI breakthroughs in 2025<br>• Markets show volatility<br>• Global climate debates"
+
+    elif "date" in prompt.lower():
         today = datetime.datetime.now(pytz.timezone("US/Central"))
         reply = f"📅 Today is {today.strftime('%A, %B %d, %Y')}"
+
+    # GPT-4 default response
     else:
         try:
-            memory = load_memory()
             history = [
                 {"role": "system", "content": f"User memory: {json.dumps(memory)}"},
                 {"role": "user", "content": prompt}
@@ -71,10 +96,33 @@ def chat():
         except Exception as e:
             reply = f"⚠️ AI Error: {str(e)}"
 
+    # Save memory if requested
+    if save_to_memory:
+        if persona:
+            memory[user_id] = memory.get(user_id, {})
+            memory[user_id]["persona"] = persona
+        if prompt.lower().startswith("remember"):
+            memory[user_id] = memory.get(user_id, {})
+            memory[user_id]["note"] = prompt
+        save_memory(memory)
+
     return jsonify({"reply": reply})
 
 
-# ------------- AGI MEMORY WRITE -----------------
+# ------------- SAVE PERSONA TO MEMORY ----------
+@app.route("/save-persona", methods=["POST"])
+def save_persona():
+    data = request.json
+    user_id = data.get("user_id")
+    persona = data.get("persona")
+    memory = load_memory()
+    memory[user_id] = memory.get(user_id, {})
+    memory[user_id]["persona"] = persona
+    save_memory(memory)
+    return jsonify({"message": "✅ Persona saved."})
+
+
+# ------------- AGI REMEMBER GOAL ---------------
 @app.route("/remember", methods=["POST"])
 def remember():
     data = request.json
@@ -83,10 +131,10 @@ def remember():
     memory = load_memory()
     memory[key] = value
     save_memory(memory)
-    return jsonify({"message": f"✅ Got it. I’ll remember: {key} = {value}"})
+    return jsonify({"message": f"✅ I’ll remember: {key} = {value}"})
 
 
-# --------- AGI PHASE 3: AGENT EXECUTOR ----------
+# --------- AGI PHASE 3: AGENT EXECUTION --------
 @app.route("/agent", methods=["POST"])
 def agent():
     data = request.json
@@ -118,7 +166,7 @@ def agent():
         return jsonify({"error": f"⚠️ Agent failed: {str(e)}"})
 
 
-# -------------- PHASE 4: /learn ------------------
+# ------------- PHASE 4: LEARN + UPDATE ---------
 @app.route("/learn", methods=["POST"])
 def learn():
     data = request.json
@@ -146,7 +194,7 @@ def learn():
         return jsonify({"error": f"Learning failed: {str(e)}"})
 
 
-# ---------- IMAGE GENERATION (REPLIT) ------------
+# ---------- IMAGE GENERATION (REPLIT) -----------
 @app.route("/generate-image", methods=["POST"])
 def generate_image():
     data = request.json
@@ -182,7 +230,7 @@ def generate_image():
         return jsonify({"error": f"Image generation failed: {str(e)}"})
 
 
-# --------------- YOUTUBE SEARCH ------------------
+# --------------- YOUTUBE SEARCH -----------------
 @app.route("/search-youtube", methods=["POST"])
 def search_youtube():
     data = request.json
@@ -201,7 +249,7 @@ def search_youtube():
     return jsonify({"error": "No video found"})
 
 
-# ----------------- TRACKING ----------------------
+# ----------------- TRACKING ---------------------
 @app.route("/track", methods=["POST"])
 def track():
     data = request.json
@@ -219,6 +267,6 @@ def track():
     return jsonify({"status": "ok"})
 
 
-# -------------- MAIN -----------------------------
+# ------------------ MAIN ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
