@@ -1,15 +1,27 @@
 services:
+  # FRONTEND: Next.js (SSR) on Render
   - type: web
-    name: droxion-backend
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn api:app --bind 0.0.0.0:$PORT
+    name: droxion-frontend
+    env: node
+    plan: free
+    region: oregon
+    rootDir: .                # change to your subfolder if not root
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    runtime: node
+    nodeVersion: 20
+    autoDeploy: true
+    healthCheckPath: /
+
     envVars:
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: REPLICATE_API_TOKEN
-        sync: false
-      - key: GOOGLE_API_KEY
-        sync: false
-      - key: SEARCH_ENGINE_ID
-        sync: false
+      - key: NEXT_PUBLIC_API_BASE
+        value: https://droxion-backend.onrender.com
+
+  # (Optional) BACKEND already on Render; if you want to manage it in the same repo, add it here:
+  # - type: web
+  #   name: droxion-backend
+  #   env: python
+  #   rootDir: backend          # folder containing your Flask app
+  #   buildCommand: pip install -r requirements.txt
+  #   startCommand: gunicorn -w 2 -k uvicorn.workers.UvicornWorker api:app
+  #   autoDeploy: true
