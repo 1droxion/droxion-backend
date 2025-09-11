@@ -1,33 +1,39 @@
-# api.py
-import os, json, base64, uuid, traceback
+import os, json, base64, uuid, traceback, time
 from datetime import datetime
 from typing import Optional
 from urllib.parse import quote
 
+import requests
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-import requests
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")  # <-- your Replit/Replicate key
-OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
-LOG_FILE = os.getenv("LOG_FILE", "user_logs.jsonl")
-STATIC_DIR = os.getenv("STATIC_DIR", "public")
+# ----- ENV -----
+OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
+OPENAI_CHAT_MODEL   = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+OPENAI_IMAGE_MODEL  = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")  # <-- make sure the key name matches exactly
+REPLICATE_MODEL     = os.getenv("REPLICATE_MODEL", "black-forest-labs/FLUX.1-dev")  # can override
+
+YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "")
+
+LOG_FILE            = os.getenv("LOG_FILE", "user_logs.jsonl")
+STATIC_DIR          = os.getenv("STATIC_DIR", "public")
+ALLOWED_ORIGINS     = os.getenv("ALLOWED_ORIGINS", "*")  # set to your Vercel URL for stricter CORS
+
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=False)
+CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=False)
 
+
+# ----- Helpers -----
 def _json_error(msg: str, status: int = 400):
     return jsonify({"ok": False, "error": msg}), status
 
 def _safe_str(x) -> str:
-    try:
-        return str(x)
-    except Exception:
-        return "<unprintable>"
+    try: return str(x)
+    except Exception: return "<unprintable>"
 
 def _log_line(payload: dict):
     payload = dict(payload or {})
@@ -38,9 +44,12 @@ def _log_line(payload: dict):
     except Exception:
         pass
 
+
+# ----- OpenAI -----
 def _openai_chat(prompt: str) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY not set")
+
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     data = {
@@ -52,74 +61,96 @@ def _openai_chat(prompt: str) -> str:
         "temperature": 0.7,
     }
     r = requests.post(url, headers=headers, json=data, timeout=60)
-    r.raise_for_status()
-    j = r.json()
-    return j["choices"][0]["message"]["content"].strip()
-
-def _replicate_image(prompt: str) -> Optional[str]:
-    """Call Replicate API; returns /static/ URL or None."""
-    if not REPLICATE_API_TOKEN:
-        return None
-    # Model examples: "black-forest-labs/FLUX.1-dev" or "stability-ai/sdxl"
-    # FLUX 1 is popular and fast; adjust if you prefer a different model.
-    data = {
-        "version": "black-forest-labs/FLUX.1-dev",
-        "input": {"prompt": prompt}
-    }
-    # Replicate HTTP API (predictions)
-    r = requests.post(
-        "https://api.replicate.com/v1/predictions",
-        headers={
-            "Authorization": f"Token {REPLICATE_API_TOKEN}",
-            "Content-Type": "application/json"
-        },
-        json=data,
-        timeout=120
-    )
     if r.status_code >= 400:
-        return None
-    pred = r.json()
-    # Poll until finished
-    url = pred.get("urls", {}).get("get")
-    if not url:
-        return None
-    for _ in range(50):
-        pr = requests.get(url, headers={"Authorization": f"Token {REPLICATE_API_TOKEN}"}, timeout=120)
-        pj = pr.json()
-        status = pj.get("status")
-        if status in ("succeeded", "failed", "canceled"):
-            if status == "succeeded":
-                out = pj.get("output")
-                if isinstance(out, list) and out:
-                    image_http = out[0]  # public HTTP URL
-                    # Download, store to /static, and return local URL
-                    img = requests.get(image_http, timeout=120)
-                    if img.status_code < 400:
-                        fname = f"{uuid.uuid4().hex}.png"
-                        fpath = os.path.join(STATIC_DIR, fname)
-                        with open(fpath, "wb") as f:
-                            f.write(img.content)
-                        return f"/static/{fname}"
-            return None
-    return None
+        raise RuntimeError(f"OpenAI chat error: {r.status_code} {r.text[:200]}")
+    j = r.json()
+    return (j["choices"][0]["message"]["content"] or "").strip()
 
 def _openai_image(prompt: str) -> Optional[str]:
     if not OPENAI_API_KEY:
         return None
+
     url = "https://api.openai.com/v1/images/generations"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-    data = {"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "size": "1024x1024", "response_format": "b64_json"}
+    data = {
+        "model": OPENAI_IMAGE_MODEL,
+        "prompt": prompt,
+        "size": "1024x1024",
+        "response_format": "b64_json"
+    }
     r = requests.post(url, headers=headers, json=data, timeout=120)
     if r.status_code >= 400:
         return None
     j = r.json()
     b64 = j["data"][0]["b64_json"]
+    img_bytes = base64.b64decode(b64)
     fname = f"{uuid.uuid4().hex}.png"
     fpath = os.path.join(STATIC_DIR, fname)
     with open(fpath, "wb") as f:
-        f.write(base64.b64decode(b64))
+        f.write(img_bytes)
     return f"/static/{fname}"
 
+
+# ----- Replicate -----
+def _replicate_image(prompt: str) -> Optional[str]:
+    """
+    Uses Replicate Predictions API.
+    - First POST to create prediction
+    - Poll until status == 'succeeded'
+    - Download first output URL -> save to /static -> return local URL
+    """
+    if not REPLICATE_API_TOKEN:
+        return None
+
+    # Create prediction
+    create = requests.post(
+        "https://api.replicate.com/v1/predictions",
+        headers={
+            "Authorization": f"Token {REPLICATE_API_TOKEN}",
+            "Content-Type": "application/json",
+        },
+        json={
+            # Newer API accepts "model" without a version hash
+            "model": REPLICATE_MODEL,
+            "input": {"prompt": prompt}
+        },
+        timeout=60
+    )
+    if create.status_code >= 400:
+        return None
+
+    pred = create.json()
+    get_url = pred.get("urls", {}).get("get")
+    if not get_url:
+        return None
+
+    # Poll
+    for _ in range(60):  # ~60 * 2s = 120s max
+        pr = requests.get(get_url, headers={"Authorization": f"Token {REPLICATE_API_TOKEN}"}, timeout=60)
+        if pr.status_code >= 400:
+            return None
+        pj = pr.json()
+        status = pj.get("status")
+        if status == "succeeded":
+            output = pj.get("output")
+            if isinstance(output, list) and output:
+                image_url = output[0]  # public CDN URL
+                img = requests.get(image_url, timeout=120)
+                if img.status_code < 400:
+                    fname = f"{uuid.uuid4().hex}.png"
+                    fpath = os.path.join(STATIC_DIR, fname)
+                    with open(fpath, "wb") as f:
+                        f.write(img.content)
+                    return f"/static/{fname}"
+            return None
+        if status in ("failed", "canceled"):
+            return None
+        time.sleep(2)
+
+    return None
+
+
+# ----- Routes -----
 @app.route("/", methods=["GET"])
 def root():
     return jsonify({"ok": True, "service": "Droxion API", "time": datetime.utcnow().isoformat()})
@@ -131,9 +162,13 @@ def chat():
         prompt = (data.get("prompt") or "").strip()
         if not prompt:
             return _json_error("Missing 'prompt'")
+
         reply = _openai_chat(prompt)
+
+        # Brand line override
         if "who" in prompt.lower() and any(k in prompt.lower() for k in ["made", "created", "built"]):
             reply = "I was created and managed by **Dhruv Patel**, powered by OpenAI."
+
         _log_line({"route": "/chat", "prompt": prompt, "reply_len": len(reply)})
         return jsonify({"ok": True, "reply": reply})
     except Exception as e:
@@ -144,10 +179,11 @@ def chat():
 def generate_image():
     try:
         data = request.get_json(force=True, silent=True) or {}
-        prompt = (data.get("prompt") or "").trim() if hasattr(str, "trim") else (data.get("prompt") or "").strip()
+        prompt = (data.get("prompt") or "").strip()
         if not prompt:
             return _json_error("Missing 'prompt'")
 
+        # Try Replicate -> OpenAI -> placeholder
         url = _replicate_image(prompt) or _openai_image(prompt)
         if not url:
             ph = f"https://dummyimage.com/1024x1024/111/fff.png&text={quote('Image unavailable')}"
@@ -169,7 +205,15 @@ def search_youtube():
             return _json_error("Missing 'prompt'")
         if not YOUTUBE_API_KEY:
             return _json_error("YOUTUBE_API_KEY not set on server", 500)
-        params = {"key": YOUTUBE_API_KEY, "part": "snippet", "type": "video", "q": q, "maxResults": 1, "safeSearch": "none"}
+
+        params = {
+            "key": YOUTUBE_API_KEY,
+            "part": "snippet",
+            "type": "video",
+            "q": q,
+            "maxResults": 1,
+            "safeSearch": "none",
+        }
         r = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=30)
         if r.status_code >= 400:
             return _json_error(f"YouTube API error: {r.status_code} {r.text[:200]}", 500)
@@ -206,6 +250,7 @@ def track():
 @app.route("/public/<path:filename>")
 def public_files(filename):
     return send_from_directory(STATIC_DIR, filename)
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
