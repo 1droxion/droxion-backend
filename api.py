@@ -1,186 +1,245 @@
-// server.js
-// Gas Station B2B – Step 1 (Single-file API)
-// Run: node server.js  (PORT=8080 default)
+# api.py
+import os, json, time, base64, uuid, traceback
+from datetime import datetime
+from typing import Optional
 
-import express from "express";
-import cors from "cors";
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+import requests
 
-// ---- Config (edit as you grow) ----
-const COMMISSION_RATE = 0.10;       // 10%
-const DELIVERY_FEE_CENTS = 1900;    // $19
-const STORE_NET_DAYS = 15;          // Net-15 to stores
-const SUPPLIER_NET_DAYS = 30;       // Net-30 from suppliers
+# ---------- Config ----------
+# ENV you should set on Render:
+# - OPENAI_API_KEY        (required for /chat, optional for /generate-image)
+# - YOUTUBE_API_KEY       (required for /search-youtube)
+# - PORT                  (Render provides) or defaults to 8000
+# Optional:
+# - OPENAI_CHAT_MODEL     (default: gpt-4o-mini)
+# - OPENAI_IMAGE_MODEL    (default: gpt-image-1)
+# - LOG_FILE              (default: user_logs.jsonl)
+# - STATIC_DIR            (default: public)
 
-// ---- Demo Data (in-memory for Step 1) ----
-const suppliers = [
-  { id: "sup-core", name: "Core Supplier", net_days: SUPPLIER_NET_DAYS },
-];
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+LOG_FILE = os.getenv("LOG_FILE", "user_logs.jsonl")
+STATIC_DIR = os.getenv("STATIC_DIR", "public")
 
-const warehouses = [
-  // North MS / Memphis metro (good for fast pilot)
-  { id: "wh-southaven", supplier_id: "sup-core", name: "Southaven, MS DC", lat: 34.9889, lon: -90.0126, address: { city: "Southaven", state: "MS" } },
-  // Central MS
-  { id: "wh-jackson", supplier_id: "sup-core", name: "Jackson, MS Hub",    lat: 32.2988, lon: -90.1848, address: { city: "Jackson", state: "MS" } },
-  // Gulf Coast
-  { id: "wh-gulfport", supplier_id: "sup-core", name: "Gulfport, MS Hub",  lat: 30.3674, lon: -89.0928, address: { city: "Gulfport", state: "MS" } },
-];
+os.makedirs(STATIC_DIR, exist_ok=True)
 
-const products = [
-  // cost_cents = your buy price; app charges cost + delivery; your revenue = commission on subtotal
-  { id: "p-redbull24",  sku: "RB-24",  name: "Red Bull 8.4oz (24pk)",  unit: "case", cost_cents: 2699 },
-  { id: "p-doritos12",  sku: "DO-12",  name: "Doritos Nacho (12pk)",   unit: "case", cost_cents: 1799 },
-  { id: "p-water24",    sku: "WT-24",  name: "Bottled Water (24pk)",   unit: "case", cost_cents:  899 },
-  { id: "p-lidscups",   sku: "LC-100", name: "Cups + Lids (100ct)",    unit: "case", cost_cents:  649 },
-];
+app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=False)
 
-const stores = [
-  // Example stores; add more or POST /stores to insert dynamically in future steps
-  { id: "st-oxford",   owner_name: "Jay",  business_name: "Quick Fuel Oxford",  email: "oxford@example.com",  lat: 34.3665, lon: -89.5192, credit_terms_days: STORE_NET_DAYS, credit_limit_cents: 200000, current_ar_cents: 0 },
-  { id: "st-jackson",  owner_name: "Raj",  business_name: "Capitol C-Store",    email: "jackson@example.com", lat: 32.2988, lon: -90.1848, credit_terms_days: STORE_NET_DAYS, credit_limit_cents: 200000, current_ar_cents: 0 },
-  { id: "st-gulfport", owner_name: "Sam",  business_name: "Coast Gas & Go",     email: "gulfport@example.com",lat: 30.3674, lon: -89.0928, credit_terms_days: STORE_NET_DAYS, credit_limit_cents: 200000, current_ar_cents: 0 },
-];
 
-// Simple “tables”
-const orders = [];
-const invoices = [];
-const settlements = [];
+# ---------- Helpers ----------
+def _json_error(msg: str, status: int = 400):
+    return jsonify({"ok": False, "error": msg}), status
 
-// ---- Utils ----
-const R = 6371; // km
-const toRad = d => d * Math.PI / 180;
-function distanceKm(a, b) {
-  const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lon - a.lon);
-  const la = toRad(a.lat), lb = toRad(b.lat);
-  const h = Math.sin(dLat/2)**2 + Math.cos(la)*Math.cos(lb)*Math.sin(dLon/2)**2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
-function nearestWarehouse(store) {
-  const pick = warehouses
-    .map(w => ({ w, d: distanceKm({ lat: store.lat, lon: store.lon }, { lat: w.lat, lon: w.lon }) }))
-    .sort((a, b) => a.d - b.d)[0];
-  return pick?.w;
-}
-function priceOrder(subtotalCents) {
-  const commission_cents = Math.round(subtotalCents * COMMISSION_RATE);
-  const delivery_fee_cents = DELIVERY_FEE_CENTS;
-  const total_cents = subtotalCents + delivery_fee_cents; // store pays subtotal + delivery; your revenue is commission + delivery fee if you keep it
-  return { commission_cents, delivery_fee_cents, total_cents };
-}
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+def _safe_str(x) -> str:
+    try:
+        return str(x)
+    except Exception:
+        return "<unprintable>"
 
-// ---- Routes ----
-app.get("/health", (req, res) => {
-  res.json({ ok: true, service: "b2b-gas-step1", time: new Date().toISOString() });
-});
+def _openai_chat(prompt: str) -> str:
+    """
+    Calls OpenAI responses API (chat style) and returns plain text.
+    """
+    if not OPENAI_API_KEY:
+      raise RuntimeError("OPENAI_API_KEY not set")
 
-app.get("/suppliers", (req, res) => res.json(suppliers));
-app.get("/warehouses", (req, res) => res.json(warehouses));
-app.get("/products", (req, res) => res.json(products));
-app.get("/stores", (req, res) => res.json(stores));
-
-/**
- * Create order
- * body: { store_id, items:[{product_id, qty}], terms? "COD"|"NET15" }
- */
-app.post("/orders", (req, res) => {
-  try {
-    const { store_id, items, terms } = req.body || {};
-    if (!store_id || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: "store_id and items[] required" });
+    # new SDK (>= 1.0): from openai import OpenAI
+    # we’ll do raw HTTP to avoid a hard dependency if you haven’t pinned versions
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
     }
-    const store = stores.find(s => s.id === store_id);
-    if (!store) return res.status(404).json({ error: "store not found" });
-
-    // load products
-    let subtotal_cents = 0;
-    const lines = items.map(row => {
-      const p = products.find(pp => pp.id === row.product_id);
-      if (!p) throw new Error(`product not found: ${row.product_id}`);
-      const qty = Number(row.qty || 0);
-      if (qty <= 0) throw new Error(`invalid qty for ${p.id}`);
-      const line = p.cost_cents * qty;
-      subtotal_cents += line;
-      return { product_id: p.id, sku: p.sku, name: p.name, qty, unit_cost_cents: p.cost_cents, line_cents: line };
-    });
-
-    // pricing
-    const { commission_cents, delivery_fee_cents, total_cents } = priceOrder(subtotal_cents);
-
-    // credit policy
-    const payment_terms = terms || (store.current_ar_cents + total_cents <= store.credit_limit_cents ? "NET15" : "COD");
-    const due_at = payment_terms === "NET15" ? addDays(new Date(), STORE_NET_DAYS) : null;
-
-    if (payment_terms === "NET15" && (store.current_ar_cents + total_cents) > store.credit_limit_cents) {
-      return res.status(402).json({ error: "credit limit exceeded", current_ar_cents: store.current_ar_cents, limit_cents: store.credit_limit_cents, needed_cents: total_cents });
+    data = {
+        "model": OPENAI_CHAT_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are Droxion's helpful assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7,
     }
+    r = requests.post(url, headers=headers, json=data, timeout=60)
+    if r.status_code >= 400:
+        raise RuntimeError(f"OpenAI chat error: {r.status_code} {r.text[:200]}")
+    j = r.json()
+    return j["choices"][0]["message"]["content"].strip()
 
-    // route to nearest warehouse
-    const wh = nearestWarehouse(store);
-    if (!wh) return res.status(500).json({ error: "no warehouse available" });
+def _openai_image(prompt: str) -> Optional[str]:
+    """
+    Tries OpenAI Images to generate a PNG.
+    Returns a public /static/ URL to the saved file, or None on failure.
+    """
+    if not OPENAI_API_KEY:
+        return None
 
-    // create order
-    const order = {
-      id: `ord_${Date.now()}`,
-      store_id: store.id,
-      warehouse_id: wh.id,
-      status: "confirmed", // pending -> confirmed -> shipped -> delivered -> invoiced -> paid
-      items: lines,
-      subtotal_cents,
-      commission_cents,
-      delivery_fee_cents,
-      total_cents,
-      payment_terms,
-      placed_at: new Date().toISOString(),
-      due_at: due_at ? due_at.toISOString() : null,
-      eta_hours_max: 36
-    };
-    orders.push(order);
-
-    // create invoice (store AR)
-    invoices.push({
-      id: `inv_${Date.now()}`,
-      order_id: order.id,
-      store_id: store.id,
-      amount_cents: total_cents,
-      due_at: order.due_at,
-      status: payment_terms === "COD" ? "open" : "open"
-    });
-
-    // schedule supplier settlement (your AP) – using subtotal as cost proxy (95% if you want)
-    settlements.push({
-      id: `set_${Date.now()}`,
-      supplier_id: wh.supplier_id,
-      order_id: order.id,
-      amount_cents: Math.round(subtotal_cents * 0.95), // proxy
-      due_at: addDays(new Date(), SUPPLIER_NET_DAYS).toISOString(),
-      status: "scheduled"
-    });
-
-    if (payment_terms === "NET15") {
-      store.current_ar_cents += total_cents;
+    url = "https://api.openai.com/v1/images/generations"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
     }
+    data = {
+        "model": OPENAI_IMAGE_MODEL,  # e.g., "gpt-image-1"
+        "prompt": prompt,
+        "size": "1024x1024",
+        "response_format": "b64_json"
+    }
+    r = requests.post(url, headers=headers, json=data, timeout=120)
+    if r.status_code >= 400:
+        return None
+    j = r.json()
+    b64 = j["data"][0]["b64_json"]
+    img_bytes = base64.b64decode(b64)
+    fname = f"{uuid.uuid4().hex}.png"
+    fpath = os.path.join(STATIC_DIR, fname)
+    with open(fpath, "wb") as f:
+        f.write(img_bytes)
+    return f"/static/{fname}"
 
-    res.json({
-      ok: true,
-      order,
-      assigned_warehouse: wh,
-      note: "36-hr delivery SLA; Net-15 if within credit limit, else COD."
-    });
-  } catch (e) {
-    res.status(400).json({ error: String(e.message || e) });
-  }
-});
+def _log_line(payload: dict):
+    payload = dict(payload or {})
+    payload["ts"] = datetime.utcnow().isoformat()
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        # don't crash on logging
+        pass
 
-app.get("/orders", (req, res) => res.json(orders));
-app.get("/invoices", (req, res) => res.json(invoices));
-app.get("/settlements", (req, res) => res.json(settlements));
 
-// ---- Start ----
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`B2B Step1 API running on :${PORT}`);
-});
+# ---------- Routes ----------
+@app.route("/", methods=["GET"])
+def root():
+    return jsonify({"ok": True, "service": "Droxion API", "time": datetime.utcnow().isoformat()})
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    """
+    Body: { "prompt": string, "voiceMode": bool? }
+    Returns: { ok, reply }
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        prompt = (data.get("prompt") or "").strip()
+        if not prompt:
+            return _json_error("Missing 'prompt'")
+
+        reply = _openai_chat(prompt)
+        _log_line({"route": "/chat", "prompt": prompt, "reply_len": len(reply)})
+
+        # Brand line override if someone asks who built it
+        if "who" in prompt.lower() and any(k in prompt.lower() for k in ["made", "created", "built"]):
+            reply = "I was created and managed by **Dhruv Patel**, powered by OpenAI."
+
+        return jsonify({"ok": True, "reply": reply})
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"chat failed: {_safe_str(e)}", 500)
+
+@app.route("/generate-image", methods=["POST"])
+def generate_image():
+    """
+    Body: { "prompt": string }
+    Returns: { ok, image_url }
+    Uses OpenAI Images by default; save into /static and return the URL.
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        prompt = (data.get("prompt") or "").strip()
+        if not prompt:
+            return _json_error("Missing 'prompt'")
+
+        url = _openai_image(prompt)
+        if not url:
+            # graceful fallback (no OpenAI key configured)
+            # Return a placeholder image with the prompt on it
+            safe_text = request.args.get("t") or "Image unavailable"
+            ph = f"https://dummyimage.com/1024x1024/111/fff.png&text={requests.utils.quote(safe_text)}"
+            _log_line({"route": "/generate-image", "prompt": prompt, "image_url": ph, "provider": "placeholder"})
+            return jsonify({"ok": True, "image_url": ph})
+
+        _log_line({"route": "/generate-image", "prompt": prompt, "image_url": url, "provider": "openai"})
+        return jsonify({"ok": True, "image_url": url})
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"image generation failed: {_safe_str(e)}", 500)
+
+@app.route("/search-youtube", methods=["POST"])
+def search_youtube():
+    """
+    Body: { "prompt": string }
+    Returns: { ok, url }   (first YouTube result)
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        q = (data.get("prompt") or "").strip()
+        if not q:
+            return _json_error("Missing 'prompt'")
+
+        if not YOUTUBE_API_KEY:
+            return _json_error("YOUTUBE_API_KEY not set on server", 500)
+
+        params = {
+            "key": YOUTUBE_API_KEY,
+            "part": "snippet",
+            "type": "video",
+            "q": q,
+            "maxResults": 1,
+            "safeSearch": "none",
+        }
+        r = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=30)
+        if r.status_code >= 400:
+            return _json_error(f"YouTube API error: {r.status_code} {r.text[:200]}", 500)
+        j = r.json()
+        items = j.get("items") or []
+        if not items:
+            return jsonify({"ok": True, "url": None})
+
+        vid = items[0]["id"]["videoId"]
+        url = f"https://www.youtube.com/watch?v={vid}"
+        _log_line({"route": "/search-youtube", "q": q, "videoId": vid})
+        return jsonify({"ok": True, "url": url})
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"youtube search failed: {_safe_str(e)}", 500)
+
+@app.route("/track", methods=["POST"])
+def track():
+    """
+    Body: { user_id, action, input? , timestamp? }
+    Appends to LOG_FILE as JSONL; returns ok.
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        # Normalize minimal fields
+        rec = {
+            "user_id": data.get("user_id") or "unknown",
+            "action": data.get("action") or "event",
+            "input": data.get("input", ""),
+            "timestamp": data.get("timestamp") or datetime.utcnow().isoformat(),
+            "ip": request.headers.get("X-Forwarded-For", request.remote_addr),
+            "ua": request.headers.get("User-Agent"),
+        }
+        _log_line({"route": "/track", **rec})
+        return jsonify({"ok": True})
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"track failed: {_safe_str(e)}", 500)
+
+
+# Serve files from /public if you ever drop assets there
+@app.route("/public/<path:filename>")
+def public_files(filename):
+    return send_from_directory(STATIC_DIR, filename)
+
+
+# ---------- Entrypoint ----------
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "8000"))
+    # On Render, gunicorn is recommended; this is fine for local testing.
+    app.run(host="0.0.0.0", port=port, debug=False)
