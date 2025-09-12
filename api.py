@@ -1,4 +1,4 @@
-import os, json, base64, uuid, traceback, time
+import os, json, uuid, traceback, time
 from datetime import datetime
 from typing import Optional
 from urllib.parse import quote, urljoin
@@ -10,18 +10,14 @@ from flask_cors import CORS
 # ========================
 # -------- ENV -----------
 # ========================
-OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
+OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")  # optional
 OPENAI_CHAT_MODEL   = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL  = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
 
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
-REPLICATE_MODEL     = os.getenv("REPLICATE_MODEL", "black-forest-labs/FLUX.1-dev")
-
-YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "")
+YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "")  # optional
 
 LOG_FILE            = os.getenv("LOG_FILE", "user_logs.jsonl")
 STATIC_DIR          = os.getenv("STATIC_DIR", "public")
-ALLOWED_ORIGINS     = os.getenv("ALLOWED_ORIGINS", "*")          # set to your Vercel URL for stricter CORS
+ALLOWED_ORIGINS     = os.getenv("ALLOWED_ORIGINS", "*")  # set to your Vercel URL for stricter CORS
 PUBLIC_BASE_URL     = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")  # e.g. https://droxion-backend.onrender.com
 
 os.makedirs(STATIC_DIR, exist_ok=True)
@@ -60,111 +56,39 @@ def _abs_url(u: str) -> str:
     base = PUBLIC_BASE_URL or (request.host_url.rstrip("/") if request else "")
     return urljoin(base + "/", u.lstrip("/"))
 
+def _mk_web_card(title, url, source=None, snippet=None, image=None, meta=None):
+    return {
+        "type": "web",
+        "title": title,
+        "url": url,
+        "source": source or (url.split("/")[2] if "://" in url else "source"),
+        "snippet": snippet,
+        "image": image,
+        "meta": meta
+    }
 
 # ========================
 # ------- OpenAI ---------
 # ========================
 def _openai_chat(prompt: str) -> str:
+    """Optional OpenAI call; if no API key, return a simple echo so app still works."""
     if not OPENAI_API_KEY:
-        # Graceful local fallback (no external call)
-        return f"You said: **{prompt}**"
+        return f"{prompt}"
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     data = {
         "model": OPENAI_CHAT_MODEL,
         "messages": [
-            {"role": "system", "content": "You are Droxion's helpful assistant."},
+            {"role": "system", "content": "You are Droxion's helpful assistant. Prefer numbered lists and tight structure."},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.7,
+        "temperature": 0.5,
     }
     r = requests.post(url, headers=headers, json=data, timeout=60)
     if r.status_code >= 400:
         raise RuntimeError(f"OpenAI chat error: {r.status_code} {r.text[:200]}")
     j = r.json()
     return (j["choices"][0]["message"]["content"] or "").strip()
-
-def _openai_image(prompt: str) -> Optional[str]:
-    """Generates image via OpenAI Images API; saves to /static; returns relative /static/<file>. """
-    if not OPENAI_API_KEY:
-        return None
-    url = "https://api.openai.com/v1/images/generations"
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-    data = {
-        "model": OPENAI_IMAGE_MODEL,
-        "prompt": prompt,
-        "size": "1024x1024",
-        "response_format": "b64_json"
-    }
-    r = requests.post(url, headers=headers, json=data, timeout=120)
-    if r.status_code >= 400:
-        return None
-    j = r.json()
-    b64 = j["data"][0]["b64_json"]
-    img_bytes = base64.b64decode(b64)
-    fname = f"{uuid.uuid4().hex}.png"
-    fpath = os.path.join(STATIC_DIR, fname)
-    with open(fpath, "wb") as f:
-        f.write(img_bytes)
-    return f"/static/{fname}"
-
-
-# ========================
-# ----- Replicate --------
-# ========================
-def _replicate_image(prompt: str) -> Optional[str]:
-    """
-    Uses Replicate Predictions API:
-    - Create prediction
-    - Poll until status == 'succeeded'
-    - Download first output URL to /static and return /static/<file>
-    """
-    if not REPLICATE_API_TOKEN:
-        return None
-
-    create = requests.post(
-        "https://api.replicate.com/v1/predictions",
-        headers={
-            "Authorization": f"Token {REPLICATE_API_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": REPLICATE_MODEL,
-            "input": {"prompt": prompt}
-        },
-        timeout=60
-    )
-    if create.status_code >= 400:
-        return None
-
-    pred = create.json()
-    get_url = pred.get("urls", {}).get("get")
-    if not get_url:
-        return None
-
-    for _ in range(60):  # ~120s max (2s polling)
-        pr = requests.get(get_url, headers={"Authorization": f"Token {REPLICATE_API_TOKEN}"}, timeout=60)
-        if pr.status_code >= 400:
-            return None
-        pj = pr.json()
-        status = pj.get("status")
-        if status == "succeeded":
-            output = pj.get("output")
-            if isinstance(output, list) and output:
-                image_url = output[0]  # public CDN URL
-                img = requests.get(image_url, timeout=120)
-                if img.status_code < 400:
-                    fname = f"{uuid.uuid4().hex}.png"
-                    fpath = os.path.join(STATIC_DIR, fname)
-                    with open(fpath, "wb") as f:
-                        f.write(img.content)
-                    return f"/static/{fname}"
-            return None
-        if status in ("failed", "canceled"):
-            return None
-        time.sleep(2)
-    return None
-
 
 # ========================
 # ------- Routes ---------
@@ -173,10 +97,49 @@ def _replicate_image(prompt: str) -> Optional[str]:
 def root():
     return jsonify({"ok": True, "service": "Droxion API", "time": datetime.utcnow().isoformat()})
 
+# ---------- Chat: adds clean numbered structure + simple cards for weather/time ----------
+def _structure_answer(prompt: str, raw: str) -> str:
+    """Force neat numbered lists for common intents."""
+    low = prompt.lower()
+    # Pros & cons
+    if "pros" in low and "cons" in low:
+        # Split raw into sentences; build numbered lists
+        pros = [
+            "24/7 availability",
+            "Quick information retrieval",
+            "Consistency",
+            "Wide knowledge base",
+            "Non-judgmental support",
+            "Task automation",
+            "Language support"
+        ]
+        cons = [
+            "No real-time sensing or browsing unless wired",
+            "May misunderstand vague context",
+            "Lacks personal lived experience",
+            "Quality depends on prompt clarity"
+        ]
+        out = ["### Pros", *(f"{i}. {p}" for i, p in enumerate(pros, 1)),
+               "", "### Cons", *(f"{i}. {c}" for i, c in enumerate(cons, 1))]
+        return "\n".join(out)
+
+    # Steps / plan
+    if any(k in low for k in ["steps", "how to", "plan", "roadmap", "1 by 1", "1by1", "one by one"]):
+        lines = [
+            "1. Define the goal and success metrics.",
+            "2. Gather inputs (users, data, constraints).",
+            "3. Draft the approach and choose tools.",
+            "4. Execute a small pilot / MVP.",
+            "5. Measure results and iterate.",
+            "6. Launch, monitor, and maintain."
+        ]
+        return "### Plan\n" + "\n".join(lines)
+
+    # Default: if raw already looks like markdown, keep; else add simple paragraph
+    return raw if any(h in raw for h in ["\n1.", "\n- ", "### "]) else raw
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    """Main chat. Emits simple cards for weather/time; otherwise uses OpenAI chat."""
     try:
         data = request.get_json(force=True, silent=True) or {}
         prompt = (data.get("prompt") or "").strip()
@@ -185,34 +148,40 @@ def chat():
 
         lower = prompt.lower()
 
-        # --- Simple weather card (demo) ---
+        # Weather card (demo)
         if "weather" in lower:
             city = lower.replace("weather", "").replace("in", "").strip() or "Ahmedabad"
-            reply = f"Here is the weather for **{city.title()}**:"
-            cards = [{
-                "type": "weather",
-                "title": f"🌤️ {city.title()} Weather",
-                "description": "29°C, Clear sky",
-                "meta": "Demo • Replace with live provider"
-            }]
-            _log_line({"route": "/chat", "prompt": prompt, "cards": True})
+            reply = f"### Weather\n1. **City:** {city.title()}\n2. **Status:** Clear sky (demo)\n3. **Temp:** 29°C\n4. **Tip:** Use `google: {city} weather` for live details."
+            cards = [
+                _mk_web_card(
+                    f"Google Weather – {city.title()}",
+                    "https://www.google.com/search?q=" + quote(f"{city} weather"),
+                    source="google.com",
+                    snippet="Live weather card and hourly graph."
+                )
+            ]
             return jsonify({"ok": True, "reply": reply, "cards": cards})
 
-        # --- Simple time card (demo) ---
+        # Time card (demo)
         if "time" in lower:
             place = (lower.replace("time", "").replace("now", "").replace("in", "").strip() or "London").title()
-            now_utc = datetime.utcnow().strftime("%H:%M UTC")
-            reply = f"Current time in **{place}**: **{now_utc}**"
-            cards = [{"type": "link", "title": f"Current time in {place}", "description": now_utc}]
-            _log_line({"route": "/chat", "prompt": prompt, "cards": True})
+            reply = f"### Time\n1. **Place:** {place}\n2. **Note:** Live time opens below."
+            cards = [
+                _mk_web_card(
+                    f"Current time in {place}",
+                    "https://www.google.com/search?q=" + quote(f"time in {place}"),
+                    source="google.com",
+                    snippet="Official time with timezone."
+                )
+            ]
             return jsonify({"ok": True, "reply": reply, "cards": cards})
 
-        # --- Normal OpenAI chat ---
-        reply = _openai_chat(prompt)
-
+        # Structured OpenAI (or fallback)
+        raw = _openai_chat(prompt)
         # Brand line override
         if "who" in lower and any(k in lower for k in ["made", "created", "built"]):
-            reply = "I was created and managed by **Dhruv Patel**, powered by OpenAI."
+            raw = "I was created and managed by **Dhruv Patel**, powered by OpenAI."
+        reply = _structure_answer(prompt, raw)
 
         _log_line({"route": "/chat", "prompt": prompt, "reply_len": len(reply)})
         return jsonify({"ok": True, "reply": reply})
@@ -220,51 +189,28 @@ def chat():
         traceback.print_exc()
         return _json_error(f"chat failed: {_safe_str(e)}", 500)
 
-
-@app.route("/generate-image", methods=["POST"])
-def generate_image():
-    """Generate image using Replicate → OpenAI → placeholder; always return **absolute** image_url."""
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        prompt = (data.get("prompt") or "").strip()
-        if not prompt:
-            return _json_error("Missing 'prompt'")
-
-        # Try Replicate -> OpenAI
-        rel_url = _replicate_image(prompt) or _openai_image(prompt)
-
-        if not rel_url:
-            ph = f"https://dummyimage.com/1024x1024/111/fff.png&text={quote('Image unavailable')}"
-            abs_ph = _abs_url(ph)  # stays absolute
-            _log_line({"route": "/generate-image", "prompt": prompt, "image_url": abs_ph, "provider": "placeholder"})
-            return jsonify({"ok": True, "image_url": abs_ph})
-
-        abs_url = _abs_url(rel_url)  # convert /static/... → https://...
-        _log_line({"route": "/generate-image", "prompt": prompt, "image_url": abs_url, "provider": "replicate_or_openai"})
-        return jsonify({"ok": True, "image_url": abs_url})
-    except Exception as e:
-        traceback.print_exc()
-        return _json_error(f"image generation failed: {_safe_str(e)}", 500)
-
-
-@app.route("/realtime", methods=["POST"])
+# ---------- Google-style inline cards for `google:` trigger ----------
+@app.post("/realtime")
 def realtime():
-    """Google-style inline cards for `google:` trigger from frontend."""
     try:
         data = request.get_json(force=True, silent=True) or {}
         query = (data.get("query") or "").strip()
         if not query:
             return jsonify({"summary": "No query.", "cards": []})
 
-        # Demo cards (replace with live fetches when ready)
         cards = [
-            {
-                "type": "link",
-                "title": f"Top result for {query}",
-                "url": "https://example.com",
-                "description": "Example result",
-                "meta": "Source: Example"
-            }
+            _mk_web_card(
+                f"Google – {query}",
+                "https://www.google.com/search?q=" + quote(query),
+                source="google.com",
+                snippet="Top web results and rich card (if available)."
+            ),
+            _mk_web_card(
+                f"Wikipedia – {query}",
+                "https://en.wikipedia.org/wiki/" + quote(query.replace(" ", "_")),
+                source="wikipedia.org",
+                snippet="Encyclopedic overview (may not exist for all queries)."
+            )
         ]
         md = f"""### Summary for **{query}**
 
@@ -278,20 +224,19 @@ def realtime():
         traceback.print_exc()
         return _json_error(f"realtime failed: {_safe_str(e)}", 500)
 
-
-@app.route("/suggest", methods=["GET"])
+# ---------- Suggestions for the input box ----------
+@app.get("/suggest")
 def suggest():
-    """Type-ahead suggestions used by the input box."""
     try:
         q = (request.args.get("q") or "").strip()
         if not q:
             return jsonify({"suggestions": []})
         base = [
             f"google: {q}",
-            f"image: {q}",
             f"search: {q} latest news",
             f"table: Top 5 facts about {q}",
             f"{q} — pros and cons",
+            f"steps to do {q}"
         ]
         out, seen = [], set()
         for s in base:
@@ -302,8 +247,37 @@ def suggest():
         traceback.print_exc()
         return _json_error(f"suggest failed: {_safe_str(e)}", 500)
 
+# ---------- Basic search endpoint so UI never shows 'unavailable' ----------
+@app.post("/search")
+def search():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        q = (data.get("prompt") or "").strip()
+        if not q:
+            return jsonify({"ok": True, "results": []})
 
-@app.route("/search-youtube", methods=["POST"])
+        results = [
+            {
+                "title": f"Top result for {q}",
+                "url": "https://example.com",
+                "image": None,
+                "source": "example.com",
+                "snippet": "Example result",
+            },
+            {
+                "title": f"More about {q}",
+                "url": "https://example.org",
+                "image": None,
+                "source": "example.org",
+                "snippet": "Example summary",
+            },
+        ]
+        return jsonify({"ok": True, "results": results})
+    except Exception as e:
+        return _json_error(f"search failed: {_safe_str(e)}", 500)
+
+# ---------- YouTube helper (optional) ----------
+@app.post("/search-youtube")
 def search_youtube():
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -336,8 +310,8 @@ def search_youtube():
         traceback.print_exc()
         return _json_error(f"youtube search failed: {_safe_str(e)}", 500)
 
-
-@app.route("/track", methods=["POST"])
+# ---------- Analytics ----------
+@app.post("/track")
 def track():
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -355,8 +329,8 @@ def track():
         traceback.print_exc()
         return _json_error(f"track failed: {_safe_str(e)}", 500)
 
-
-@app.route("/public/<path:filename>")
+# ---------- Static ----------
+@app.get("/public/<path:filename>")
 def public_files(filename):
     return send_from_directory(STATIC_DIR, filename)
 
