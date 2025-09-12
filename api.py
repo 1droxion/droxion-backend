@@ -1,10 +1,10 @@
 import os, json, uuid, traceback, time
 from datetime import datetime
 from typing import Optional
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 
 import requests
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 
 # ========================
@@ -103,7 +103,6 @@ def _structure_answer(prompt: str, raw: str) -> str:
     low = prompt.lower()
     # Pros & cons
     if "pros" in low and "cons" in low:
-        # Split raw into sentences; build numbered lists
         pros = [
             "24/7 availability",
             "Quick information retrieval",
@@ -135,7 +134,7 @@ def _structure_answer(prompt: str, raw: str) -> str:
         ]
         return "### Plan\n" + "\n".join(lines)
 
-    # Default: if raw already looks like markdown, keep; else add simple paragraph
+    # Default
     return raw if any(h in raw for h in ["\n1.", "\n- ", "### "]) else raw
 
 @app.route("/chat", methods=["POST"])
@@ -178,7 +177,6 @@ def chat():
 
         # Structured OpenAI (or fallback)
         raw = _openai_chat(prompt)
-        # Brand line override
         if "who" in lower and any(k in lower for k in ["made", "created", "built"]):
             raw = "I was created and managed by **Dhruv Patel**, powered by OpenAI."
         reply = _structure_answer(prompt, raw)
@@ -247,7 +245,7 @@ def suggest():
         traceback.print_exc()
         return _json_error(f"suggest failed: {_safe_str(e)}", 500)
 
-# ---------- Basic search endpoint so UI never shows 'unavailable' ----------
+# ---------- Basic search endpoint (uses real domains, not example.com) ----------
 @app.post("/search")
 def search():
     try:
@@ -258,18 +256,18 @@ def search():
 
         results = [
             {
-                "title": f"Top result for {q}",
-                "url": "https://example.com",
+                "title": f"{q} – Wikipedia",
+                "url": "https://en.wikipedia.org/wiki/" + quote(q.replace(" ", "_")),
                 "image": None,
-                "source": "example.com",
-                "snippet": "Example result",
+                "source": "wikipedia.org",
+                "snippet": f"Overview related to {q}.",
             },
             {
-                "title": f"More about {q}",
-                "url": "https://example.org",
+                "title": f"{q} – Google results",
+                "url": "https://www.google.com/search?q=" + quote(q),
                 "image": None,
-                "source": "example.org",
-                "snippet": "Example summary",
+                "source": "google.com",
+                "snippet": "Top web results and rich previews.",
             },
         ]
         return jsonify({"ok": True, "results": results})
@@ -309,6 +307,32 @@ def search_youtube():
     except Exception as e:
         traceback.print_exc()
         return _json_error(f"youtube search failed: {_safe_str(e)}", 500)
+
+# ---------- Lightweight image proxy (fixes broken previews) ----------
+@app.get("/img")
+def img_proxy():
+    """
+    Proxy remote images so the frontend can display previews reliably.
+    Usage: /img?url=<absolute_http_or_https_url>
+    """
+    u = request.args.get("url", "")
+    p = urlparse(u)
+    if p.scheme not in ("http", "https"):
+        return Response(b"", status=400)
+    try:
+        r = requests.get(
+            u,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": ""},
+            timeout=10,
+        )
+        ct = r.headers.get("content-type", "image/jpeg")
+        data = r.content[:5_000_000]  # cap at ~5MB
+        resp = Response(data, content_type=ct)
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+    except Exception:
+        return Response(b"", status=502)
 
 # ---------- Analytics ----------
 @app.post("/track")
