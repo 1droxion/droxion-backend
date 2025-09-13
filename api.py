@@ -1,5 +1,5 @@
-# app.py  (Droxion backend – enriched sources + /preview OG image)
-import os, json, uuid, traceback, time, re
+# app.py  (Droxion backend – enriched sources + OG/Twitter preview)
+import os, json, traceback, time, re
 from datetime import datetime
 from urllib.parse import quote, urljoin, urlparse
 
@@ -35,11 +35,13 @@ def _safe_str(x) -> str:
     except Exception: return "<unprintable>"
 
 def _log_line(payload: dict):
-    payload = dict(payload or {}); payload["ts"] = datetime.utcnow().isoformat()
+    payload = dict(payload or {})
+    payload["ts"] = datetime.utcnow().isoformat()
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception: pass
+    except Exception:
+        pass
 
 def _abs_url(u: str) -> str:
     if not u: return u
@@ -59,7 +61,9 @@ def _mk_web_card(title, url, source=None, snippet=None, image=None, meta=None, c
     }
 
 def _openai_chat(prompt: str) -> str:
-    if not OPENAI_API_KEY: return f"{prompt}"
+    """Optional OpenAI call; if no key set, echo the prompt so app still works."""
+    if not OPENAI_API_KEY:
+        return f"{prompt}"
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     data = {
@@ -71,7 +75,8 @@ def _openai_chat(prompt: str) -> str:
         "temperature": 0.5,
     }
     r = requests.post(url, headers=headers, json=data, timeout=60)
-    if r.status_code >= 400: raise RuntimeError(f"OpenAI chat error: {r.status_code} {r.text[:200]}")
+    if r.status_code >= 400:
+        raise RuntimeError(f"OpenAI chat error: {r.status_code} {r.text[:200]}")
     j = r.json()
     return (j["choices"][0]["message"]["content"] or "").strip()
 
@@ -79,6 +84,7 @@ def _openai_chat(prompt: str) -> str:
 # ---- Source builders ---
 # ========================
 def _hq_news_cards(q: str):
+    """High-quality news/search cards for any topic."""
     e = quote(q)
     return [
         _mk_web_card(f"Forbes — {q}",               f"https://www.forbes.com/search/?q={e}",             "forbes.com",      "Forbes site results",            ctype="news"),
@@ -90,6 +96,7 @@ def _hq_news_cards(q: str):
     ]
 
 def _crypto_cards(q: str):
+    """Crypto trackers + news."""
     e = q.lower()
     sym = "bitcoin" if ("bitcoin" in e or "btc" in e) else ("ethereum" if ("ethereum" in e or "eth" in e) else q)
     s = quote(sym)
@@ -102,7 +109,8 @@ def _crypto_cards(q: str):
     ]
 
 def _weather_cards(q: str):
-    city = q.strip() or "Ahmedabad"; e = quote(city)
+    city = q.strip() or "Ahmedabad"
+    e = quote(city)
     return [
         _mk_web_card(f"Google Weather — {city.title()}", f"https://www.google.com/search?q={e}+weather","google.com","Live card & hourly graph", ctype="weather"),
         _mk_web_card(f"Weather.com — {city.title()}",    f"https://weather.com/search/enhancedlocalsearch?where={e}","weather.com","Detailed forecast", ctype="weather"),
@@ -110,7 +118,8 @@ def _weather_cards(q: str):
     ]
 
 def _time_cards(place: str):
-    p = place.strip() or "London"; e = quote(p)
+    p = place.strip() or "London"
+    e = quote(p)
     return [
         _mk_web_card(f"Current time in {p.title()}", f"https://www.google.com/search?q=time+in+{e}", "google.com", "Official time & timezone", ctype="time"),
         _mk_web_card(f"Time.is — {p.title()}",       f"https://time.is/{e}",                        "time.is",    "Atomic clock synced time", ctype="time"),
@@ -162,7 +171,8 @@ def chat():
         _log_line({"route": "/chat", "prompt": prompt, "reply_len": len(reply)})
         return jsonify({"ok": True, "reply": reply})
     except Exception as e:
-        traceback.print_exc(); return _json_error(f"chat failed: {_safe_str(e)}", 500)
+        traceback.print_exc()
+        return _json_error(f"chat failed: {_safe_str(e)}", 500)
 
 # ---------- Realtime ----------
 @app.post("/realtime")
@@ -171,11 +181,15 @@ def realtime():
         data = request.get_json(force=True, silent=True) or {}
         query  = (data.get("query")  or "").strip()
         intent = (data.get("intent") or "").strip().lower()
-        if not query: return jsonify({"summary": "No query.", "cards": []})
+        if not query:
+            return jsonify({"summary": "No query.", "cards": []})
 
-        if intent == "weather": cards = _weather_cards(query)
-        elif intent == "time":  cards = _time_cards(query)
-        elif intent == "crypto":cards = _crypto_cards(query)
+        if intent == "weather":
+            cards = _weather_cards(query)
+        elif intent == "time":
+            cards = _time_cards(query)
+        elif intent == "crypto":
+            cards = _crypto_cards(query)
         elif intent == "images":
             e = quote(query)
             cards = [
@@ -183,6 +197,7 @@ def realtime():
                 _mk_web_card(f"Bing Images — {query}",   f"https://www.bing.com/images/search?q={e}",    "bing.com",   "Image results"),
             ]
         else:
+            # default/news
             cards = _hq_news_cards(query)
 
         md = f"""### Summary for **{query}**
@@ -194,21 +209,32 @@ def realtime():
 """
         return jsonify({"summary": f"Results for {query}", "markdown": md, "cards": cards})
     except Exception as e:
-        traceback.print_exc(); return _json_error(f"realtime failed: {_safe_str(e)}", 500)
+        traceback.print_exc()
+        return _json_error(f"realtime failed: {_safe_str(e)}", 500)
 
 # ---------- Suggestions ----------
 @app.get("/suggest")
 def suggest():
     try:
         q = (request.args.get("q") or "").strip()
-        if not q: return jsonify({"suggestions": []})
-        base = [f"google: {q}", f"search: {q} latest news", f"table: Top 5 facts about {q}", f"{q} — pros and cons", f"steps to do {q}", f"youtube: {q}"]
+        if not q:
+            return jsonify({"suggestions": []})
+        base = [
+            f"google: {q}",
+            f"search: {q} latest news",
+            f"table: Top 5 facts about {q}",
+            f"{q} — pros and cons",
+            f"steps to do {q}",
+            f"youtube: {q}"
+        ]
         out, seen = [], set()
         for s in base:
-            if s not in seen: out.append(s); seen.add(s)
+            if s not in seen:
+                out.append(s); seen.add(s)
         return jsonify({"suggestions": out[:8]})
     except Exception as e:
-        traceback.print_exc(); return _json_error(f"suggest failed: {_safe_str(e)}", 500)
+        traceback.print_exc()
+        return _json_error(f"suggest failed: {_safe_str(e)}", 500)
 
 # ---------- Search ----------
 @app.post("/search")
@@ -216,12 +242,20 @@ def search():
     try:
         data = request.get_json(force=True, silent=True) or {}
         q = (data.get("prompt") or "").strip()
-        if not q: return jsonify({"ok": True, "results": []})
+        if not q:
+            return jsonify({"ok": True, "results": []})
 
         results = []
         results.extend(_hq_news_cards(q))
         results.append(_mk_web_card(f"Google — {q}", "https://www.google.com/search?q=" + quote(q), "google.com", "Top web results"))
-        out = [{"title": r["title"], "url": r["url"], "image": r.get("image"), "source": r.get("source"), "snippet": r.get("snippet")} for r in results]
+
+        out = [{
+            "title": r["title"],
+            "url": r["url"],
+            "image": r.get("image"),
+            "source": r.get("source"),
+            "snippet": r.get("snippet")
+        } for r in results]
         return jsonify({"ok": True, "results": out})
     except Exception as e:
         return _json_error(f"search failed: {_safe_str(e)}", 500)
@@ -232,28 +266,53 @@ def search_youtube():
     try:
         data = request.get_json(force=True, silent=True) or {}
         q = (data.get("prompt") or "").strip()
-        if not q: return _json_error("Missing 'prompt'")
-        if not YOUTUBE_API_KEY: return _json_error("YOUTUBE_API_KEY not set on server", 500)
+        if not q:
+            return _json_error("Missing 'prompt'")
+        if not YOUTUBE_API_KEY:
+            return _json_error("YOUTUBE_API_KEY not set on server", 500)
 
-        params = {"key": YOUTUBE_API_KEY, "part": "snippet", "type": "video", "q": q, "maxResults": 1, "safeSearch": "none"}
+        params = {
+            "key": YOUTUBE_API_KEY,
+            "part": "snippet",
+            "type": "video",
+            "q": q,
+            "maxResults": 1,
+            "safeSearch": "none",
+        }
         r = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=30)
-        if r.status_code >= 400: return _json_error(f"YouTube API error: {r.status_code} {r.text[:200]}", 500)
-        j = r.json(); items = j.get("items") or []
-        if not items: return jsonify({"ok": True, "url": None})
-        vid = items[0]["id"]["videoId"]; url = f"https://www.youtube.com/watch?v={vid}"
+        if r.status_code >= 400:
+            return _json_error(f"YouTube API error: {r.status_code} {r.text[:200]}", 500)
+        j = r.json()
+        items = j.get("items") or []
+        if not items:
+            return jsonify({"ok": True, "url": None})
+        vid = items[0]["id"]["videoId"]
+        url = f"https://www.youtube.com/watch?v={vid}"
         _log_line({"route": "/search-youtube", "q": q, "videoId": vid})
         return jsonify({"ok": True, "url": url})
     except Exception as e:
-        traceback.print_exc(); return _json_error(f"youtube search failed: {_safe_str(e)}", 500)
+        traceback.print_exc()
+        return _json_error(f"youtube search failed: {_safe_str(e)}", 500)
 
 # ---------- Image proxy ----------
 @app.get("/img")
 def img_proxy():
-    u = request.args.get("url", ""); p = urlparse(u)
-    if p.scheme not in ("http", "https"): return Response(b"", status=400)
+    """
+    Proxy remote images so the frontend can display previews reliably.
+    Usage: /img?url=<absolute_http_or_https_url>
+    """
+    u = request.args.get("url", "")
+    p = urlparse(u)
+    if p.scheme not in ("http", "https"):
+        return Response(b"", status=400)
     try:
-        r = requests.get(u, headers={"User-Agent": "Mozilla/5.0", "Referer": ""}, timeout=10)
-        ct = r.headers.get("content-type", "image/jpeg"); data = r.content[:5_000_000]
+        r = requests.get(
+            u,
+            headers={"User-Agent": "Mozilla/5.0", "Referer": ""},
+            timeout=10,
+        )
+        ct = r.headers.get("content-type", "image/jpeg")
+        data = r.content[:5_000_000]  # cap at ~5MB
         resp = Response(data, content_type=ct)
         resp.headers["Cache-Control"] = "public, max-age=86400"
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -282,37 +341,48 @@ def preview():
         # serve from cache
         ent = _og_cache.get(url)
         if ent and now - ent.get("ts",0) < _OG_TTL:
-            return jsonify({"ok": True, "image_url": ent.get("img")})
+            return jsonify({"ok": True, "image": ent.get("img")})
 
-        r = requests.get(url, headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}, timeout=8)
-        if r.status_code >= 400: return jsonify({"ok": False, "image_url": None})
+        r = requests.get(
+            url,
+            headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"},
+            timeout=8
+        )
+        if r.status_code >= 400:
+            return jsonify({"ok": False, "image": None})
         html = r.text or ""
 
-        # find og:image / twitter:image (basic regex – fast, dependency-free)
+        # find og:image / twitter:image (fast, dependency-free)
         def _find(meta_name):
-            pat = re.compile(rf'<meta[^>]+(?:property|name)\s*=\s*["\']{meta_name}["\'][^>]*?content\s*=\s*["\']([^"\']+)["\']', re.I)
-            m = pat.search(html); return m.group(1) if m else None
+            pat = re.compile(
+                rf'<meta[^>]+(?:property|name)\s*=\s*["\']{meta_name}["\'][^>]*?content\s*=\s*["\']([^"\']+)["\']',
+                re.I
+            )
+            m = pat.search(html)
+            return m.group(1) if m else None
 
         img = _find("og:image") or _find("twitter:image") or _find("og:image:secure_url")
         img = _make_absolute(url, img)
 
-        # tiny validation (HEAD)
+        # tiny validation
         if img:
             try:
                 hr = requests.head(img, allow_redirects=True, timeout=5)
-                if hr.status_code >= 400: img = None
+                if hr.status_code >= 400:
+                    img = None
             except Exception:
                 pass
 
         _og_cache[url] = {"img": img, "ts": now}
-        return jsonify({"ok": True, "image_url": img})
+        return jsonify({"ok": True, "image": img})
     except Exception:
-        return jsonify({"ok": False, "image_url": None})
+        return jsonify({"ok": False, "image": None})
 
 # ---------- Health ----------
 @app.get("/_health/youtube")
 def health_youtube():
-    ok = bool(YOUTUBE_API_KEY); tail = (YOUTUBE_API_KEY or "")[-4:]
+    ok = bool(YOUTUBE_API_KEY)
+    tail = (YOUTUBE_API_KEY or "")[-4:]
     return jsonify({"ok": ok, "present": ok, "tail": tail})
 
 # ---------- Static ----------
