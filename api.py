@@ -1,7 +1,6 @@
-# app.py  (Droxion backend – enriched sources)
-import os, json, uuid, traceback, time
+# app.py  (Droxion backend – images fixed + simple weather card)
+import os, json, uuid, traceback
 from datetime import datetime
-from typing import Optional
 from urllib.parse import quote, urljoin, urlparse
 
 import requests
@@ -13,7 +12,6 @@ from flask_cors import CORS
 # ========================
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 OPENAI_CHAT_MODEL   = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-
 YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "")
 
 LOG_FILE            = os.getenv("LOG_FILE", "user_logs.jsonl")
@@ -67,9 +65,9 @@ def _mk_web_card(title, url, source=None, snippet=None, image=None, meta=None, c
     }
 
 def _openai_chat(prompt: str) -> str:
-    """Optional OpenAI call; echoes if key missing (so the app works offline)."""
+    # Optional – if no key, just echo the prompt so app still works
     if not OPENAI_API_KEY:
-        return f"{prompt}"
+        return prompt
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     data = {
@@ -81,8 +79,7 @@ def _openai_chat(prompt: str) -> str:
         "temperature": 0.5,
     }
     r = requests.post(url, headers=headers, json=data, timeout=60)
-    if r.status_code >= 400:
-        raise RuntimeError(f"OpenAI chat error: {r.status_code} {r.text[:200]}")
+    r.raise_for_status()
     j = r.json()
     return (j["choices"][0]["message"]["content"] or "").strip()
 
@@ -90,115 +87,67 @@ def _openai_chat(prompt: str) -> str:
 # ---- Source builders ---
 # ========================
 def _hq_news_cards(q: str):
-    """High-quality news/search cards for any topic."""
     e = quote(q)
     return [
-        _mk_web_card(f"Forbes — {q}",               f"https://www.forbes.com/search/?q={e}",          "forbes.com",   "Forbes site results",                ctype="news"),
-        _mk_web_card(f"Bloomberg — {q}",            f"https://www.bloomberg.com/search?query={e}",    "bloomberg.com","Bloomberg site results",             ctype="news"),
-        _mk_web_card(f"Reuters — {q}",              f"https://www.reuters.com/site-search/?query={e}","reuters.com",  "Reuters site results",               ctype="news"),
-        _mk_web_card(f"CNBC — {q}",                 f"https://www.cnbc.com/search/?query={e}",        "cnbc.com",     "CNBC site results",                  ctype="news"),
-        _mk_web_card(f"Google News — {q}",          f"https://news.google.com/search?q={e}",          "news.google.com","Top coverage & local outlets",     ctype="news"),
-        _mk_web_card(f"Wikipedia — {q}",            f"https://en.wikipedia.org/wiki/{quote(q.replace(' ','_'))}", "wikipedia.org","Background overview", ctype="wiki"),
+        _mk_web_card(f"Forbes — {q}",               f"https://www.forbes.com/search/?q={e}",          "forbes.com",   ctype="news"),
+        _mk_web_card(f"Bloomberg — {q}",            f"https://www.bloomberg.com/search?query={e}",    "bloomberg.com",ctype="news"),
+        _mk_web_card(f"Reuters — {q}",              f"https://www.reuters.com/site-search/?query={e}","reuters.com",  ctype="news"),
+        _mk_web_card(f"CNBC — {q}",                 f"https://www.cnbc.com/search/?query={e}",        "cnbc.com",     ctype="news"),
+        _mk_web_card(f"Google News — {q}",          f"https://news.google.com/search?q={e}",          "news.google.com",ctype="news"),
+        _mk_web_card(f"Wikipedia — {q}",            f"https://en.wikipedia.org/wiki/{quote(q.replace(' ','_'))}", "wikipedia.org", ctype="wiki"),
+        _mk_web_card(f"Google — {q}",               f"https://www.google.com/search?q={e}",           "google.com"),
     ]
 
 def _crypto_cards(q: str):
-    """Crypto trackers + news."""
     e = q.lower()
-    sym_guess = None
-    if "bitcoin" in e or "btc" in e: sym_guess = "bitcoin"
-    if "ethereum" in e or "eth" in e: sym_guess = "ethereum"
-    s = quote(sym_guess or q)
+    sym = "bitcoin" if ("bitcoin" in e or "btc" in e) else ("ethereum" if ("ethereum" in e or "eth" in e) else q)
+    s = quote(sym)
     return [
-        _mk_web_card(f"CoinMarketCap — {sym_guess or q}", f"https://coinmarketcap.com/currencies/{s}/", "coinmarketcap.com", "Price, market cap, chart", ctype="crypto"),
-        _mk_web_card(f"CoinGecko — {sym_guess or q}",     f"https://www.coingecko.com/en/coins/{s}",   "coingecko.com",     "Price, chart",             ctype="crypto"),
-        _mk_web_card(f"CoinDesk — {q}",                   f"https://www.coindesk.com/search/{quote(q)}","coindesk.com",     "Crypto news",             ctype="news"),
-        _mk_web_card(f"Cointelegraph — {q}",              f"https://cointelegraph.com/search?query={quote(q)}","cointelegraph.com","Crypto news",       ctype="news"),
-        _mk_web_card(f"Google — {q}",                     f"https://www.google.com/search?q={quote(q)}","google.com",       "Top web results"),
+        _mk_web_card(f"CoinMarketCap — {sym}", f"https://coinmarketcap.com/currencies/{s}/", "coinmarketcap.com", ctype="crypto"),
+        _mk_web_card(f"CoinGecko — {sym}",     f"https://www.coingecko.com/en/coins/{s}",   "coingecko.com",     ctype="crypto"),
+        _mk_web_card(f"CoinDesk — {q}",        f"https://www.coindesk.com/search/{quote(q)}","coindesk.com",     ctype="news"),
+        _mk_web_card(f"Cointelegraph — {q}",   f"https://cointelegraph.com/search?query={quote(q)}","cointelegraph.com",ctype="news"),
     ]
 
-def _weather_cards(q: str):
-    city = q.strip() or "Ahmedabad"
+def _weather_cards_links(city: str):
     e = quote(city)
     return [
-        _mk_web_card(f"Google Weather — {city.title()}", f"https://www.google.com/search?q={e}+weather","google.com","Live card & hourly graph", ctype="weather"),
-        _mk_web_card(f"Weather.com — {city.title()}",    f"https://weather.com/search/enhancedlocalsearch?where={e}","weather.com","Detailed forecast", ctype="weather"),
-        _mk_web_card(f"AccuWeather — {city.title()}",    f"https://www.accuweather.com/en/search-locations?query={e}","accuweather.com","Extended forecast", ctype="weather"),
+        _mk_web_card(f"Google Weather — {city.title()}", f"https://www.google.com/search?q={e}+weather","google.com",ctype="weather"),
+        _mk_web_card(f"Weather.com — {city.title()}",    f"https://weather.com/search/enhancedlocalsearch?where={e}","weather.com", ctype="weather"),
+        _mk_web_card(f"AccuWeather — {city.title()}",    f"https://www.accuweather.com/en/search-locations?query={e}","accuweather.com",ctype="weather"),
     ]
 
 def _time_cards(place: str):
     p = place.strip() or "London"
     e = quote(p)
     return [
-        _mk_web_card(f"Current time in {p.title()}", f"https://www.google.com/search?q=time+in+{e}", "google.com", "Official time & timezone", ctype="time"),
-        _mk_web_card(f"Time.is — {p.title()}",       f"https://time.is/{e}",                        "time.is",    "Atomic clock synced time", ctype="time"),
+        _mk_web_card(f"Current time in {p.title()}", f"https://www.google.com/search?q=time+in+{e}", "google.com", ctype="time"),
+        _mk_web_card(f"Time.is — {p.title()}",       f"https://time.is/{e}",                        "time.is",    ctype="time"),
     ]
 
-# ---------- Image Search (no API key) ----------
-def _image_search_free(q: str):
+def _free_image_urls(q: str, n=12):
     """
-    Try Lexica (public JSON). Fallback to Unsplash Source so you always get images.
-    Returns: {"images":[{url,pageUrl,title,source},...], "sources":[{title,url},...]}
+    Return hot-linkable JPEGs from providers that allow direct embedding.
+    We mix three sources and add a cache-buster query so Safari doesn’t reuse 302s.
     """
-    q = (q or "image").strip()
+    qs   = quote(q)
+    rnd  = uuid.uuid4().hex[:8]
+    out  = []
 
-    # ---- 1) Lexica (public JSON) ----
-    try:
-        r = requests.get(
-            f"https://lexica.art/api/v1/search?q={quote(q)}",
-            headers={"accept": "application/json"},
-            timeout=12
-        )
-        if r.ok:
-            data = r.json() or {}
-            imgs = data.get("images") or []
-            grid = []
-            for im in imgs[:24]:
-                url = im.get("src") or im.get("imageUrl") or im.get("jpeg") or im.get("png")
-                if not url:
-                    continue
-                grid.append({
-                    "url": url,
-                    "pageUrl": f"https://lexica.art/prompt/{im.get('id')}" if im.get("id") else f"https://lexica.art/?q={quote(q)}",
-                    "title": im.get("prompt") or q,
-                    "source": "lexica.art"
-                })
-            if grid:
-                return {
-                    "images": grid,
-                    "sources": [
-                        {"title":"Lexica",          "url": f"https://lexica.art/?q={quote(q)}"},
-                        {"title":"Google Images",   "url": f"https://www.google.com/search?tbm=isch&q={quote(q)}"},
-                        {"title":"Bing Images",     "url": f"https://www.bing.com/images/search?q={quote(q)}"},
-                        {"title":"Unsplash",        "url": f"https://unsplash.com/s/photos/{quote(q)}"},
-                    ]
-                }
-    except Exception as e:
-        print("Lexica failed:", e)
+    # 1) Picsum (royalty-free placeholder photos)
+    for i in range(min(4, n)):
+        out.append(f"https://picsum.photos/seed/{rnd}-{i}/900/600.jpg")
 
-    # ---- 2) Unsplash Source fallback (direct images) ----
-    variants = [
-        q, f"{q} photo", f"{q} image", f"{q} wallpaper", f"{q} aesthetic",
-        f"{q} hd", f"{q} landscape", f"{q} portrait", f"{q} macro", f"{q} art"
-    ]
-    grid = []
-    for i in range(12):
-        kw = variants[i % len(variants)]
-        url = f"https://source.unsplash.com/900x600/?{quote(kw)}&sig={i+13}"
-        grid.append({
-            "url": url,
-            "pageUrl": f"https://unsplash.com/s/photos/{quote(q)}",
-            "title": q,
-            "source": "unsplash.com"
-        })
-    return {
-        "images": grid,
-        "sources": [
-            {"title":"Google Images", "url": f"https://www.google.com/search?tbm=isch&q={quote(q)}"},
-            {"title":"Bing Images",   "url": f"https://www.bing.com/images/search?q={quote(q)}"},
-            {"title":"Unsplash",      "url": f"https://unsplash.com/s/photos/{quote(q)}"},
-            {"title":"Lexica",        "url": f"https://lexica.art/?q={quote(q)}"},
-        ]
-    }
+    # 2) LoremFlickr topic images
+    for i in range(min(4, n - len(out))):
+        out.append(f"https://loremflickr.com/900/600/{qs}?lock={i}")
+
+    # 3) Unsplash *image CDN* via the “source.unsplash.com” redirect
+    #    We keep it, but the frontend will load through /img proxy to avoid referrer issues.
+    for i in range(min(6, n - len(out))):
+        out.append(f"https://source.unsplash.com/900x600/?{qs}&sig={i}&_b={rnd}")
+
+    return out[:n]
 
 # ========================
 # ------- Routes ---------
@@ -207,33 +156,8 @@ def _image_search_free(q: str):
 def root():
     return jsonify({"ok": True, "service": "Droxion API", "time": datetime.utcnow().isoformat()})
 
-# ---------- Chat (structured fallback) ----------
-def _structure_answer(prompt: str, raw: str) -> str:
-    low = prompt.lower()
-    if "pros" in low and "cons" in low:
-        pros = [
-            "24/7 availability","Quick information retrieval","Consistency",
-            "Wide knowledge base","Non-judgmental support","Task automation","Language support"
-        ]
-        cons = [
-            "No real-time browsing unless wired","May miss vague context",
-            "No personal lived experience","Quality depends on prompt clarity"
-        ]
-        out = ["### Pros", *(f"{i}. {p}" for i,p in enumerate(pros,1)), "", "### Cons", *(f"{i}. {c}" for i,c in enumerate(cons,1))]
-        return "\n".join(out)
-    if any(k in low for k in ["steps","how to","plan","roadmap","1 by 1","1by1","one by one"]):
-        lines = [
-            "1. Define the goal and success metrics.",
-            "2. Gather inputs (users, data, constraints).",
-            "3. Draft the approach and choose tools.",
-            "4. Execute a small pilot / MVP.",
-            "5. Measure results and iterate.",
-            "6. Launch, monitor, and maintain."
-        ]
-        return "### Plan\n" + "\n".join(lines)
-    return raw if any(h in raw for h in ["\n1.", "\n- ", "### "]) else raw
-
-@app.route("/chat", methods=["POST"])
+# ---------- Chat ----------
+@app.post("/chat")
 def chat():
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -241,32 +165,24 @@ def chat():
         if not prompt:
             return _json_error("Missing 'prompt'")
 
-        lower = prompt.lower()
+        low = prompt.lower()
+        if "weather" in low:
+            city = low.replace("weather","").replace("in","").strip() or "Ahmedabad"
+            reply = f"### Weather\n1. **City:** {city.title()}\n2. Open the live tracker below."
+            return jsonify({"ok": True, "reply": reply, "cards": _weather_cards_links(city)})
 
-        # Weather quick card
-        if "weather" in lower:
-            city = lower.replace("weather","").replace("in","").strip() or "Ahmedabad"
-            reply = f"### Weather\n1. **City:** {city.title()}\n2. **Tip:** Open the live tracker below."
-            return jsonify({"ok": True, "reply": reply, "cards": _weather_cards(city)})
-
-        # Time quick card
-        if "time" in lower:
-            place = lower.replace("time","").replace("now","").replace("in","").strip() or "London"
-            reply = f"### Time\n1. **Place:** {place.title()}\n2. **Note:** Open for live time."
+        if "time" in low:
+            place = low.replace("time","").replace("now","").replace("in","").strip() or "London"
+            reply = f"### Time\n1. **Place:** {place.title()}\n2. Tap a source for live time."
             return jsonify({"ok": True, "reply": reply, "cards": _time_cards(place)})
 
         raw = _openai_chat(prompt)
-        if "who" in lower and any(k in lower for k in ["made","created","built"]):
-            raw = "I was created and managed by **Dhruv Patel**, powered by OpenAI."
-        reply = _structure_answer(prompt, raw)
-
-        _log_line({"route": "/chat", "prompt": prompt, "reply_len": len(reply)})
-        return jsonify({"ok": True, "reply": reply})
+        return jsonify({"ok": True, "reply": raw})
     except Exception as e:
         traceback.print_exc()
         return _json_error(f"chat failed: {_safe_str(e)}", 500)
 
-# ---------- Realtime (rich sources for news/crypto/weather/time/images) ----------
+# ---------- Realtime ----------
 @app.post("/realtime")
 def realtime():
     try:
@@ -277,40 +193,53 @@ def realtime():
             return jsonify({"summary": "No query.", "cards": []})
 
         cards = []
+        images = []
+        md = f"### Results for **{query}**"
 
         if intent == "weather":
-            cards = _weather_cards(query)
+            # Minimal synthetic weather card so the UI renders the **WeatherCard** block.
+            city = query.title()
+            cards = [{
+                "type": "weather",
+                "title": f"Weather — {city}",
+                "subtitle": "Tap sources for live details",
+                "icon": "https://openweathermap.org/img/wn/01d.png",
+                "temp_c": None,
+                "temp_f": None,
+                "feels_like_c": None,
+                "feels_like_f": None,
+                "humidity": None,
+                "wind_kph": None,
+                "wind_mph": None,
+                "hourly": [],
+                "daily": []
+            }] + _weather_cards_links(query)
+
         elif intent == "time":
             cards = _time_cards(query)
+
         elif intent == "crypto":
             cards = _crypto_cards(query)
+
         elif intent == "images":
-            # Build an images grid + source pills (what the front-end expects)
-            pack = _image_search_free(query)
-            images = pack.get("images", [])
-            links  = pack.get("sources", [])
-            cards = []
-            if images:
-                cards.append({"type": "images-grid", "images": images})
-            else:
-                # last-ditch visual fallback
-                ph1 = f"https://source.unsplash.com/900x600/?{quote(query)}"
-                ph2 = f"https://source.unsplash.com/900x600/?{quote(query)}+photo"
-                cards.append({"type":"gallery","images":[ph1, ph2]})
-            if links:
-                cards.append({"type": "sources", "links": links})
+            # ✅ return actual image URLs (frontend will proxy them)
+            images = _free_image_urls(query, n=12)
+            cards = [
+                _mk_web_card(f"Google Images — {query}", f"https://www.google.com/search?tbm=isch&q={quote(query)}", "google.com", ctype="images"),
+                _mk_web_card(f"Bing Images — {query}",   f"https://www.bing.com/images/search?q={quote(query)}",     "bing.com",   ctype="images"),
+                _mk_web_card("Unsplash",                  f"https://unsplash.com/s/photos/{quote(query)}",            "unsplash.com", ctype="images"),
+                _mk_web_card("Lexica (AI images)",        f"https://lexica.art/?q={quote(query)}",                    "lexica.art", ctype="images"),
+            ]
+
         else:
-            # default/news: give HQ sources + Google/Wiki
             cards = _hq_news_cards(query)
 
-        md = f"""### Summary for **{query}**
-
-| Item | Detail |
-|---|---|
-| Query | {query} |
-| Info  | Open the sources below |
-"""
-        return jsonify({"summary": f"Results for {query}", "markdown": md, "cards": cards})
+        return jsonify({
+            "summary": f"Results for {query}",
+            "markdown": md,
+            "cards": cards,
+            "images": images
+        })
     except Exception as e:
         traceback.print_exc()
         return _json_error(f"realtime failed: {_safe_str(e)}", 500)
@@ -339,7 +268,7 @@ def suggest():
         traceback.print_exc()
         return _json_error(f"suggest failed: {_safe_str(e)}", 500)
 
-# ---------- Search (returns HQ links first) ----------
+# ---------- Search ----------
 @app.post("/search")
 def search():
     try:
@@ -347,13 +276,7 @@ def search():
         q = (data.get("prompt") or "").strip()
         if not q:
             return jsonify({"ok": True, "results": []})
-
-        results = []
-        # prefer HQ
-        results.extend(_hq_news_cards(q))
-        # include Google web search at end
-        results.append(_mk_web_card(f"Google — {q}", "https://www.google.com/search?q=" + quote(q), "google.com", "Top web results"))
-        # map to minimal schema expected by frontend
+        results = _hq_news_cards(q)
         out = [{
             "title": r["title"],
             "url": r["url"],
@@ -365,7 +288,7 @@ def search():
     except Exception as e:
         return _json_error(f"search failed: {_safe_str(e)}", 500)
 
-# ---------- YouTube helper ----------
+# ---------- YouTube ----------
 @app.post("/search-youtube")
 def search_youtube():
     try:
@@ -399,7 +322,7 @@ def search_youtube():
         traceback.print_exc()
         return _json_error(f"youtube search failed: {_safe_str(e)}", 500)
 
-# ---------- Lightweight image proxy ----------
+# ---------- Image proxy ----------
 @app.get("/img")
 def img_proxy():
     u = request.args.get("url", "")
@@ -407,7 +330,7 @@ def img_proxy():
     if p.scheme not in ("http", "https"):
         return Response(b"", status=400)
     try:
-        r = requests.get(u, headers={"User-Agent": "Mozilla/5.0", "Referer": ""}, timeout=10)
+        r = requests.get(u, headers={"User-Agent": "Mozilla/5.0", "Referer": ""}, timeout=15)
         ct = r.headers.get("content-type", "image/jpeg")
         data = r.content[:5_000_000]
         resp = Response(data, content_type=ct)
@@ -417,21 +340,14 @@ def img_proxy():
     except Exception:
         return Response(b"", status=502)
 
-# ---------- Health (optional check for YT key presence) ----------
-@app.get("/_health/youtube")
-def health_youtube():
-    ok = bool(YOUTUBE_API_KEY)
-    tail = (YOUTUBE_API_KEY or "")[-4:]
-    return jsonify({"ok": ok, "present": ok, "tail": tail})
-
 # ---------- Static ----------
 @app.get("/public/<path:filename>")
 def public_files(filename):
     return send_from_directory(STATIC_DIR, filename)
 
-# ========================
-# ------ Main ------------
-# ========================
+# ================
+# ---- Main ------
+# ================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     app.run(host="0.0.0.0", port=port, debug=False)
