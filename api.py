@@ -133,6 +133,73 @@ def _time_cards(place: str):
         _mk_web_card(f"Time.is — {p.title()}",       f"https://time.is/{e}",                        "time.is",    "Atomic clock synced time", ctype="time"),
     ]
 
+# ---------- Image Search (no API key) ----------
+def _image_search_free(q: str):
+    """
+    Try Lexica (public JSON). Fallback to Unsplash Source so you always get images.
+    Returns: {"images":[{url,pageUrl,title,source},...], "sources":[{title,url},...]}
+    """
+    q = (q or "image").strip()
+
+    # ---- 1) Lexica (public JSON) ----
+    try:
+        r = requests.get(
+            f"https://lexica.art/api/v1/search?q={quote(q)}",
+            headers={"accept": "application/json"},
+            timeout=12
+        )
+        if r.ok:
+            data = r.json() or {}
+            imgs = data.get("images") or []
+            grid = []
+            for im in imgs[:24]:
+                url = im.get("src") or im.get("imageUrl") or im.get("jpeg") or im.get("png")
+                if not url:
+                    continue
+                grid.append({
+                    "url": url,
+                    "pageUrl": f"https://lexica.art/prompt/{im.get('id')}" if im.get("id") else f"https://lexica.art/?q={quote(q)}",
+                    "title": im.get("prompt") or q,
+                    "source": "lexica.art"
+                })
+            if grid:
+                return {
+                    "images": grid,
+                    "sources": [
+                        {"title":"Lexica",          "url": f"https://lexica.art/?q={quote(q)}"},
+                        {"title":"Google Images",   "url": f"https://www.google.com/search?tbm=isch&q={quote(q)}"},
+                        {"title":"Bing Images",     "url": f"https://www.bing.com/images/search?q={quote(q)}"},
+                        {"title":"Unsplash",        "url": f"https://unsplash.com/s/photos/{quote(q)}"},
+                    ]
+                }
+    except Exception as e:
+        print("Lexica failed:", e)
+
+    # ---- 2) Unsplash Source fallback (direct images) ----
+    variants = [
+        q, f"{q} photo", f"{q} image", f"{q} wallpaper", f"{q} aesthetic",
+        f"{q} hd", f"{q} landscape", f"{q} portrait", f"{q} macro", f"{q} art"
+    ]
+    grid = []
+    for i in range(12):
+        kw = variants[i % len(variants)]
+        url = f"https://source.unsplash.com/900x600/?{quote(kw)}&sig={i+13}"
+        grid.append({
+            "url": url,
+            "pageUrl": f"https://unsplash.com/s/photos/{quote(q)}",
+            "title": q,
+            "source": "unsplash.com"
+        })
+    return {
+        "images": grid,
+        "sources": [
+            {"title":"Google Images", "url": f"https://www.google.com/search?tbm=isch&q={quote(q)}"},
+            {"title":"Bing Images",   "url": f"https://www.bing.com/images/search?q={quote(q)}"},
+            {"title":"Unsplash",      "url": f"https://unsplash.com/s/photos/{quote(q)}"},
+            {"title":"Lexica",        "url": f"https://lexica.art/?q={quote(q)}"},
+        ]
+    }
+
 # ========================
 # ------- Routes ---------
 # ========================
@@ -218,12 +285,20 @@ def realtime():
         elif intent == "crypto":
             cards = _crypto_cards(query)
         elif intent == "images":
-            # Frontend will gallery these if present; we still return a few safe image search links
-            e = quote(query)
-            cards = [
-                _mk_web_card(f"Google Images — {query}", f"https://www.google.com/search?tbm=isch&q={e}", "google.com", "Image results"),
-                _mk_web_card(f"Bing Images — {query}",   f"https://www.bing.com/images/search?q={e}",    "bing.com",   "Image results"),
-            ]
+            # Build an images grid + source pills (what the front-end expects)
+            pack = _image_search_free(query)
+            images = pack.get("images", [])
+            links  = pack.get("sources", [])
+            cards = []
+            if images:
+                cards.append({"type": "images-grid", "images": images})
+            else:
+                # last-ditch visual fallback
+                ph1 = f"https://source.unsplash.com/900x600/?{quote(query)}"
+                ph2 = f"https://source.unsplash.com/900x600/?{quote(query)}+photo"
+                cards.append({"type":"gallery","images":[ph1, ph2]})
+            if links:
+                cards.append({"type": "sources", "links": links})
         else:
             # default/news: give HQ sources + Google/Wiki
             cards = _hq_news_cards(query)
