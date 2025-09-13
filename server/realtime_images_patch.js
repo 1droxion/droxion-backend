@@ -1,40 +1,37 @@
-// server/realtime_images_patch.js
-// Works with Express. Attach as the FIRST handler for POST /realtime.
+import express from "express";
+import { imagesIntent } from "./server/realtime_images_patch.js";  // <== NEW
 
-import { imageFreeSearch } from "./imageSearch_free.js";
+const router = express.Router();
 
-/**
- * Middleware: handles images intent. If not images, falls through to next().
- * Usage in your server:
- *   app.post("/realtime", imagesIntent, yourExistingRealtimeHandler);
- */
-export async function imagesIntent(req, res, next) {
+// Attach middleware first
+router.post("/", imagesIntent, async (req, res) => {
   try {
     const { query = "", intent = "" } = req.body || {};
-    if (intent !== "images") return next();
 
-    const q = (query || "").replace(/^images?:\s*/i, "").trim() || "nature landscape";
-    const { images, sources } = await imageFreeSearch(q);
+    // ======= Your existing realtime code =======
+    // Example:
+    if (intent === "news") {
+      // your news logic here...
+      return res.json({ markdown: "Top news…", cards: [] });
+    }
 
-    return res.json({
-      markdown: `### Image results for **${q}**`,
-      cards: [
-        { type: "images-grid", images },           // grid tiles
-        { type: "sources", links: sources }        // source pills
-      ],
-      steps: [
-        "Searched Wikipedia thumbnails",
-        "Added Unsplash Source fallback",
-        "Merged, deduped, and returned 24 tiles"
-      ]
-    });
+    if (intent === "weather") {
+      // your weather logic here...
+      return res.json({ markdown: "Weather details…", cards: [] });
+    }
+
+    if (intent === "crypto") {
+      // crypto logic
+      return res.json({ markdown: "Crypto prices…", cards: [] });
+    }
+
+    // fallback to chat
+    return res.json({ markdown: "Default chat response", cards: [] });
+
   } catch (err) {
-    console.error("imagesIntent error:", err);
-    return res.status(500).json({ error: "images intent failed" });
+    console.error("Realtime error:", err);
+    res.status(500).json({ error: "Realtime failed" });
   }
-}
+});
 
-/* ---------- CommonJS version (if your server uses require) ----------
-const { imageFreeSearch } = require("./imageSearch_free.js");
-exports.imagesIntent = async function (req, res, next) { ...same body... };
---------------------------------------------------------------------- */
+export default router;
