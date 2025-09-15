@@ -1,5 +1,5 @@
-# app.py  (Droxion backend — branding + images fixed + simple weather card + STT/TTS voice I/O)
-import os, json, uuid, traceback
+# app.py  (Droxion backend — branding + images fixed + simple weather card + STT/TTS voice I/O + image/file/deepsearch)
+import os, json, uuid, base64, mimetypes, traceback
 from datetime import datetime
 from urllib.parse import quote, urljoin, urlparse
 
@@ -16,6 +16,7 @@ YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "")
 
 LOG_FILE            = os.getenv("LOG_FILE", "user_logs.jsonl")
 STATIC_DIR          = os.getenv("STATIC_DIR", "public")
+UPLOADS_DIR         = os.path.join(STATIC_DIR, "uploads")
 ALLOWED_ORIGINS     = os.getenv("ALLOWED_ORIGINS", "*")
 PUBLIC_BASE_URL     = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
@@ -32,6 +33,7 @@ TTS_FORMAT          = os.getenv("TTS_FORMAT", "mp3")             # mp3 | wav | o
 MAX_TTS_CHARS       = int(os.getenv("MAX_TTS_CHARS", "900"))     # safety trim for long answers
 
 os.makedirs(STATIC_DIR, exist_ok=True)
+os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=False)
@@ -152,6 +154,32 @@ def _openai_chat(prompt: str) -> str:
     j = r.json()
     return (j["choices"][0]["message"]["content"] or "").strip()
 
+def _openai_vision(prompt: str, img_bytes: bytes, mime: str) -> str:
+    """Use Chat Completions with an image (data URL) if API key is present."""
+    if not OPENAI_API_KEY:
+        return f"I received your image. {POWERED_BY_LINE}"
+    try:
+        data_url = f"data:{mime};base64," + base64.b64encode(img_bytes).decode("utf-8")
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": OPENAI_CHAT_MODEL,
+            "messages": [
+                {"role": "system", "content": f"You are {ASSISTANT_NAME}, created by {CREATOR_NAME}. Be precise and concise."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt or "Describe the image and list the key details in bullets."},
+                    {"type": "image_url", "image_url": {"url": data_url}}
+                ]}
+            ]
+        }
+        r = requests.post(url, headers=headers, json=payload, timeout=120)
+        r.raise_for_status()
+        j = r.json()
+        return (j["choices"][0]["message"]["content"] or "").strip()
+    except Exception as e:
+        _log_line({"vision_error": _safe_str(e)})
+        return "I analyzed the image, but couldn't run the AI model. Here’s a generic summary:\n\n- An image was provided.\n- I can still attach helpful sources and examples.\n\n" + POWERED_BY_LINE
+
 # ========================
 # ---- Source builders ---
 # ========================
@@ -195,26 +223,13 @@ def _time_cards(place: str):
     ]
 
 def _free_image_urls(q: str, n=12):
-    """
-    Return hot-linkable JPEGs from providers that allow direct embedding.
-    We mix three sources and add a cache-buster query so Safari doesn’t reuse 302s.
-    """
-    qs   = quote(q)
+    """Return hot-linkable JPEGs from providers that allow direct embedding."""
+    qs   = quote(q or "wallpaper")
     rnd  = uuid.uuid4().hex[:8]
     out  = []
-
-    # 1) Picsum (royalty-free placeholder photos)
-    for i in range(min(4, n)):
-        out.append(f"https://picsum.photos/seed/{rnd}-{i}/900/600.jpg")
-
-    # 2) LoremFlickr topic images
-    for i in range(min(4, n - len(out))):
-        out.append(f"https://loremflickr.com/900/600/{qs}?lock={i}")
-
-    # 3) Unsplash source redirect (frontend will proxy via /img)
-    for i in range(min(6, n - len(out))):
-        out.append(f"https://source.unsplash.com/900x600/?{qs}&sig={i}&_b={rnd}")
-
+    for i in range(min(4, n)): out.append(f"https://picsum.photos/seed/{rnd}-{i}/900/600.jpg")
+    for i in range(min(4, n - len(out))): out.append(f"https://loremflickr.com/900/600/{qs}?lock={i}")
+    for i in range(min(6, n - len(out))): out.append(f"https://source.unsplash.com/900x600/?{qs}&sig={i}&_b={rnd}")
     return out[:n]
 
 # ========================
@@ -297,11 +312,16 @@ def realtime():
 
         elif intent == "images":
             images = _free_image_urls(query, n=12)
-            cards = [
-                _mk_web_card(f"Google Images — {query}", f"https://www.google.com/search?tbm=isch&q={quote(query)}", "google.com", ctype="images"),
-                _mk_web_card(f"Bing Images — {query}",   f"https://www.bing.com/images/search?q={quote(query)}",     "bing.com",   ctype="images"),
-                _mk_web_card("Unsplash",                  f"https://unsplash.com/s/photos/{quote(query)}",            "unsplash.com", ctype="images"),
-                _mk_web_card("Lexica (AI images)",        f"https://lexica.art/?q={quote(query)}",                    "lexica.art", ctype="images"),
+            # Provide an images-grid card because the UI prefers it
+            cards = [{
+                "type": "images-grid",
+                "title": f"Images — {query}",
+                "images": images
+            },
+            _mk_web_card(f"Google Images — {query}", f"https://www.google.com/search?tbm=isch&q={quote(query)}", "google.com", ctype="images"),
+            _mk_web_card(f"Bing Images — {query}",   f"https://www.bing.com/images/search?q={quote(query)}",     "bing.com",   ctype="images"),
+            _mk_web_card("Unsplash",                  f"https://unsplash.com/s/photos/{quote(query)}",            "unsplash.com", ctype="images"),
+            _mk_web_card("Lexica (AI images)",        f"https://lexica.art/?q={quote(query)}",                    "lexica.art", ctype="images"),
             ]
 
         else:
@@ -453,6 +473,112 @@ def tts():
     except Exception as e:
         traceback.print_exc()
         return _json_error(f"tts failed: {_safe_str(e)}", 500)
+
+# ---------- Analyze Image (Vision) ----------
+@app.post("/analyze-image")
+def analyze_image():
+    try:
+        if "image" not in request.files:
+            return _json_error("Missing 'image' form file", 400)
+        img = request.files["image"]
+        prompt = (request.form.get("prompt") or request.form.get("text") or "").strip()
+        agent  = (request.form.get("agent") or "false").lower() == "true"
+        web    = (request.form.get("web") or "false").lower() == "true"
+        persona= (request.form.get("persona") or "").strip()
+
+        img_bytes = img.read()
+        mime = img.mimetype or "image/jpeg"
+
+        ai_desc = _openai_vision(prompt, img_bytes, mime)
+
+        # Save the file to /public/uploads for optional reuse
+        name = f"{uuid.uuid4().hex}_{(img.filename or 'image').replace('/', '_')}"
+        path = os.path.join(UPLOADS_DIR, name)
+        with open(path, "wb") as f:
+            f.write(img_bytes)
+        public_url = _abs_url(f"/public/uploads/{name}")
+
+        # Try to guess a keyword for images grid
+        topic = (prompt or img.filename or "photo").split()[0]
+        grid = {"type": "images-grid", "title": f"Images — {topic}", "images": _free_image_urls(topic, 12)}
+
+        return jsonify({
+            "ok": True,
+            "ai_description": _brand_footer(ai_desc),
+            "image_url": public_url,
+            "cards": [grid] + (_hq_news_cards(topic) if web else [])
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"analyze-image failed: {_safe_str(e)}", 500)
+
+# ---------- File Analyze (generic) ----------
+@app.post("/file-analyze")
+def file_analyze():
+    try:
+        if "file" not in request.files:
+            return _json_error("Missing 'file' form field", 400)
+        f = request.files["file"]
+        raw = f.read()
+        size = len(raw)
+        mime = f.mimetype or mimetypes.guess_type(f.filename or "")[0] or "application/octet-stream"
+
+        # Save file
+        name = f"{uuid.uuid4().hex}_{(f.filename or 'file').replace('/', '_')}"
+        path = os.path.join(UPLOADS_DIR, name)
+        with open(path, "wb") as fp:
+            fp.write(raw)
+        public_url = _abs_url(f"/public/uploads/{name}")
+
+        title = f.name or f.filename or "Uploaded file"
+        title = f"{title} ({mime}, {round(size/1024,1)} KB)"
+
+        preview = ""
+        if mime.startswith("text/") or mime in ("application/json",):
+            try:
+                txt = raw.decode("utf-8", errors="replace")
+                snippet = txt.strip().splitlines()[:20]
+                preview = "```\n" + "\n".join(snippet) + "\n```"
+            except Exception:
+                preview = ""
+        elif mime in ("application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                      "application/msword"):
+            preview = "_Preview not available for this file type._"
+        else:
+            preview = "_Binary file uploaded._"
+
+        return jsonify({
+            "ok": True,
+            "title": title,
+            "preview": preview,
+            "url": public_url,
+            "cards": []
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"file-analyze failed: {_safe_str(e)}", 500)
+
+# ---------- Deep Research (lightweight) ----------
+@app.post("/deepsearch")
+def deepsearch():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        q = (data.get("q") or data.get("query") or "").strip()
+        if not q:
+            return _json_error("Missing 'q'")
+
+        # Compose a focused answer using the chat model (if available)
+        answer = _openai_chat(f"Do deep research on: {q}\nReturn a crisp, structured summary with 3 sections: Key Points, Steps/How-to, and Sources to check.")
+
+        cards = _hq_news_cards(q)
+        return jsonify({
+            "ok": True,
+            "answer": _brand_footer(answer),
+            "cards": cards
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"deepsearch failed: {_safe_str(e)}", 500)
 
 # ---------- Image proxy (fixes hotlink issues) ----------
 @app.get("/img")
