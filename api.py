@@ -1,4 +1,4 @@
-# app.py  (Droxion backend – images fixed + simple weather card)
+# app.py  (Droxion backend — branding + images fixed + simple weather card + STT/TTS voice I/O)
 import os, json, uuid, traceback
 from datetime import datetime
 from urllib.parse import quote, urljoin, urlparse
@@ -18,6 +18,18 @@ LOG_FILE            = os.getenv("LOG_FILE", "user_logs.jsonl")
 STATIC_DIR          = os.getenv("STATIC_DIR", "public")
 ALLOWED_ORIGINS     = os.getenv("ALLOWED_ORIGINS", "*")
 PUBLIC_BASE_URL     = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+
+# <<< BRANDING >>>
+CREATOR_NAME        = os.getenv("CREATOR_NAME", "Dhruv Patel")
+ASSISTANT_NAME      = os.getenv("ASSISTANT_NAME", "Droxion")
+POWERED_BY_LINE     = os.getenv("POWERED_BY_LINE", "— Powered by Droxion")
+
+# Voice I/O (speech-to-text & text-to-speech)
+WHISPER_MODEL       = os.getenv("WHISPER_MODEL", "whisper-1")    # speech → text
+TTS_MODEL           = os.getenv("TTS_MODEL", "tts-1")            # text  → speech
+TTS_VOICE           = os.getenv("TTS_VOICE", "alloy")            # alloy | nova | verse | etc.
+TTS_FORMAT          = os.getenv("TTS_FORMAT", "mp3")             # mp3 | wav | opus
+MAX_TTS_CHARS       = int(os.getenv("MAX_TTS_CHARS", "900"))     # safety trim for long answers
 
 os.makedirs(STATIC_DIR, exist_ok=True)
 
@@ -64,16 +76,73 @@ def _mk_web_card(title, url, source=None, snippet=None, image=None, meta=None, c
         "meta": meta
     }
 
+# <<< BRANDING >>>
+def _brand_footer(text: str) -> str:
+    """Append a small powered-by footer if content looks like a normal reply."""
+    t = (text or "").rstrip()
+    if not t:
+        return t
+    if POWERED_BY_LINE in t:
+        return t
+    return t + "\n\n" + POWERED_BY_LINE
+
+def _identity_answer(kind: str) -> str:
+    if kind == "who_made":
+        return f"I was created by **{CREATOR_NAME}**. {POWERED_BY_LINE}"
+    if kind == "who_built":
+        return f"I was built by **{CREATOR_NAME}**. {POWERED_BY_LINE}"
+    if kind == "who_created":
+        return f"I was created by **{CREATOR_NAME}**. {POWERED_BY_LINE}"
+    if kind == "your_name":
+        return f"My name is **{ASSISTANT_NAME}**. {POWERED_BY_LINE}"
+    if kind == "powered_by":
+        return f"I'm **powered by Droxion** — fast search, rich cards, and memory. {POWERED_BY_LINE}"
+    return f"{ASSISTANT_NAME}. {POWERED_BY_LINE}"
+
+def _match_identity_intent(prompt: str):
+    p = (prompt or "").lower().strip()
+    if not p:
+        return None
+    checks = [
+        (["who made you", "who created you", "who built you", "who developed you"], "who_made"),
+        (["your name", "what is your name", "who are you", "what are you called"], "your_name"),
+        (["powered by", "who powers you", "what powers you"], "powered_by"),
+    ]
+    for keys, tag in checks:
+        if any(k in p for k in keys):
+            return tag
+    return None
+
+def _trim_for_tts(text: str, limit: int = MAX_TTS_CHARS) -> str:
+    t = (text or "").strip()
+    if len(t) <= limit:
+        return t
+    cut = t[:limit]
+    last_dot = cut.rfind(". ")
+    if last_dot > 150:
+        return cut[:last_dot+1]
+    return cut + "…"
+
 def _openai_chat(prompt: str) -> str:
-    # Optional – if no key, just echo the prompt so app still works
+    # Optional – if no key, just echo so app still works for local dev
     if not OPENAI_API_KEY:
         return prompt
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+
+    # Strong identity guardrails
+    sys_msg = (
+        f"You are {ASSISTANT_NAME}, a helpful AI created by {CREATOR_NAME}. "
+        f"Never claim you were created by OpenAI. "
+        f"If asked about who made you, ALWAYS say {CREATOR_NAME}. "
+        f"Prefer numbered lists and tight structure. "
+        f"When it fits, end answers with a short footer: '{POWERED_BY_LINE}'."
+    )
+
     data = {
         "model": OPENAI_CHAT_MODEL,
         "messages": [
-            {"role": "system", "content": "You are Droxion's helpful assistant. Prefer numbered lists and tight structure."},
+            {"role": "system", "content": sys_msg},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.5,
@@ -142,8 +211,7 @@ def _free_image_urls(q: str, n=12):
     for i in range(min(4, n - len(out))):
         out.append(f"https://loremflickr.com/900/600/{qs}?lock={i}")
 
-    # 3) Unsplash *image CDN* via the “source.unsplash.com” redirect
-    #    We keep it, but the frontend will load through /img proxy to avoid referrer issues.
+    # 3) Unsplash source redirect (frontend will proxy via /img)
     for i in range(min(6, n - len(out))):
         out.append(f"https://source.unsplash.com/900x600/?{qs}&sig={i}&_b={rnd}")
 
@@ -154,7 +222,7 @@ def _free_image_urls(q: str, n=12):
 # ========================
 @app.route("/", methods=["GET"])
 def root():
-    return jsonify({"ok": True, "service": "Droxion API", "time": datetime.utcnow().isoformat()})
+    return jsonify({"ok": True, "service": f"{ASSISTANT_NAME} API", "powered_by": "Droxion", "time": datetime.utcnow().isoformat()})
 
 # ---------- Chat ----------
 @app.post("/chat")
@@ -165,19 +233,26 @@ def chat():
         if not prompt:
             return _json_error("Missing 'prompt'")
 
+        # Identity overrides (prevents "created by OpenAI")
+        id_tag = _match_identity_intent(prompt)
+        if id_tag:
+            reply = _identity_answer(id_tag)
+            return jsonify({"ok": True, "reply": reply})
+
         low = prompt.lower()
         if "weather" in low:
             city = low.replace("weather","").replace("in","").strip() or "Ahmedabad"
-            reply = f"### Weather\n1. **City:** {city.title()}\n2. Open the live tracker below."
+            reply = f"### Weather\n1. **City:** {city.title()}\n2. Open the live tracker below.\n\n{POWERED_BY_LINE}"
             return jsonify({"ok": True, "reply": reply, "cards": _weather_cards_links(city)})
 
         if "time" in low:
             place = low.replace("time","").replace("now","").replace("in","").strip() or "London"
-            reply = f"### Time\n1. **Place:** {place.title()}\n2. Tap a source for live time."
+            reply = f"### Time\n1. **Place:** {place.title()}\n2. Tap a source for live time.\n\n{POWERED_BY_LINE}"
             return jsonify({"ok": True, "reply": reply, "cards": _time_cards(place)})
 
         raw = _openai_chat(prompt)
-        return jsonify({"ok": True, "reply": raw})
+        branded = _brand_footer(raw)
+        return jsonify({"ok": True, "reply": branded})
     except Exception as e:
         traceback.print_exc()
         return _json_error(f"chat failed: {_safe_str(e)}", 500)
@@ -194,10 +269,9 @@ def realtime():
 
         cards = []
         images = []
-        md = f"### Results for **{query}**"
+        md = f"### Results for **{query}**\n\n{POWERED_BY_LINE}"
 
         if intent == "weather":
-            # Minimal synthetic weather card so the UI renders the **WeatherCard** block.
             city = query.title()
             cards = [{
                 "type": "weather",
@@ -222,7 +296,6 @@ def realtime():
             cards = _crypto_cards(query)
 
         elif intent == "images":
-            # ✅ return actual image URLs (frontend will proxy them)
             images = _free_image_urls(query, n=12)
             cards = [
                 _mk_web_card(f"Google Images — {query}", f"https://www.google.com/search?tbm=isch&q={quote(query)}", "google.com", ctype="images"),
@@ -322,7 +395,66 @@ def search_youtube():
         traceback.print_exc()
         return _json_error(f"youtube search failed: {_safe_str(e)}", 500)
 
-# ---------- Image proxy ----------
+# ---------- Speech to Text (mic) ----------
+@app.post("/transcribe")
+def transcribe():
+    try:
+        if not OPENAI_API_KEY:
+            return _json_error("OPENAI_API_KEY not set", 500)
+        if "audio" not in request.files:
+            return _json_error("Missing audio file field 'audio'", 400)
+        f = request.files["audio"]
+        files = {"file": (f.filename or "audio.webm", f.stream, f.mimetype or "application/octet-stream")}
+        data  = {"model": WHISPER_MODEL}
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        r = requests.post("https://api.openai.com/v1/audio/transcriptions", headers=headers, data=data, files=files, timeout=120)
+        if r.status_code >= 400:
+            return _json_error(f"whisper error {r.status_code}: {r.text[:200]}", 500)
+        j = r.json()
+        text = (j.get("text") or "").strip()
+        _log_line({"route":"/transcribe","ok":True,"len":len(text)})
+        return jsonify({"ok": True, "text": text})
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"transcribe failed: {_safe_str(e)}", 500)
+
+# ---------- Text to Speech (speak back) ----------
+@app.post("/tts")
+def tts():
+    try:
+        if not OPENAI_API_KEY:
+            return _json_error("OPENAI_API_KEY not set", 500)
+        data = request.get_json(force=True, silent=True) or {}
+        txt   = _trim_for_tts(data.get("text") or "")
+        voice = data.get("voice") or TTS_VOICE
+        fmt   = (data.get("format") or TTS_FORMAT).lower()
+        if not txt:
+            return _json_error("Missing text", 400)
+        if fmt not in ("mp3","wav","opus"):
+            return _json_error("Unsupported format", 400)
+
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        body = {
+            "model": TTS_MODEL,
+            "voice": voice,
+            "input": txt,
+            "format": fmt
+        }
+        r = requests.post("https://api.openai.com/v1/audio/speech", headers=headers, json=body, timeout=120)
+        if r.status_code >= 400:
+            return _json_error(f"tts error {r.status_code}: {r.text[:200]}", 500)
+
+        audio_bytes = r.content
+        mime = "audio/mpeg" if fmt=="mp3" else ("audio/wav" if fmt=="wav" else "audio/ogg")
+        resp = Response(audio_bytes, content_type=mime)
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"tts failed: {_safe_str(e)}", 500)
+
+# ---------- Image proxy (fixes hotlink issues) ----------
 @app.get("/img")
 def img_proxy():
     u = request.args.get("url", "")
