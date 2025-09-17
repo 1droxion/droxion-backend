@@ -2,6 +2,7 @@
 import os, json, uuid, base64, mimetypes, traceback
 from datetime import datetime
 from urllib.parse import quote, urljoin, urlparse
+import time  # <-- added for weather cache buckets
 
 import requests
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -231,6 +232,102 @@ def _free_image_urls(q: str, n=12):
     for i in range(min(4, n - len(out))): out.append(f"https://loremflickr.com/900/600/{qs}?lock={i}")
     for i in range(min(6, n - len(out))): out.append(f"https://source.unsplash.com/900x600/?{qs}&sig={i}&_b={rnd}")
     return out[:n]
+
+# ========================
+# ------- Weather --------
+# ========================
+# Lightweight, keyless weather using Open-Meteo. GPS-first (front-end can pass ?lat&lon),
+# otherwise fall back to IP geolocation. Cache results in 5-minute buckets.
+_WEATHER_CACHE = {}
+
+def _client_ip():
+    hdr = request.headers.get("X-Forwarded-For", "")
+    if hdr:
+        return hdr.split(",")[0].strip()
+    return request.remote_addr or "0.0.0.0"
+
+def _ip_to_geo(ip):
+    try:
+        r = requests.get(f"https://ipapi.co/{ip}/json/", timeout=4)
+        j = r.json()
+        return float(j.get("latitude")), float(j.get("longitude")), j.get("city"), j.get("region"), j.get("country_name")
+    except Exception:
+        return 39.8283, -98.5795, None, None, None  # USA centroid fallback
+
+def _round_5m(ts=None):
+    ts = ts or time.time()
+    return int(ts // 300)
+
+def _fetch_openmeteo(lat, lon):
+    weather_url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        "&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m"
+        "&hourly=temperature_2m,precipitation_probability&forecast_days=1&timezone=auto"
+    )
+    aqi_url = (
+        "https://air-quality-api.open-meteo.com/v1/air-quality"
+        f"?latitude={lat}&longitude={lon}&current=european_aqi,pm2_5,pm10,ozone&timezone=auto"
+    )
+    w = requests.get(weather_url, timeout=6).json()
+    a = requests.get(aqi_url, timeout=6).json()
+
+    cur = w.get("current", {})
+    hourly = w.get("hourly", {})
+    out = {
+        "lat": lat, "lon": lon,
+        "timezone": w.get("timezone"),
+        "current": {
+            "tempC": cur.get("temperature_2m"),
+            "feelsLikeC": cur.get("apparent_temperature"),
+            "humidity": cur.get("relative_humidity_2m"),
+            "precip": cur.get("precipitation"),
+            "windKph": cur.get("wind_speed_10m"),
+            "code": cur.get("weather_code"),
+        },
+        "hourly": [
+            {"time": t, "tempC": tc, "pop": pop}
+            for t, tc, pop in zip(
+                hourly.get("time", [])[:12],
+                hourly.get("temperature_2m", [])[:12],
+                hourly.get("precipitation_probability", [])[:12]
+            )
+        ],
+        "air": {
+            "aqi": (a.get("current", {}) or {}).get("european_aqi"),
+            "pm25": (a.get("current", {}) or {}).get("pm2_5"),
+            "pm10": (a.get("current", {}) or {}).get("pm10"),
+            "ozone": (a.get("current", {}) or {}).get("ozone"),
+        }
+    }
+    return out
+
+@app.get("/weather")
+def weather():
+    try:
+        lat = request.args.get("lat", type=float)
+        lon = request.args.get("lon", type=float)
+        city = region = country = None
+
+        if lat is None or lon is None:
+            ip = _client_ip()
+            lat, lon, city, region, country = _ip_to_geo(ip)
+
+        bucket = _round_5m()
+        key = (round(lat, 3), round(lon, 3), bucket)
+        if key in _WEATHER_CACHE:
+            data = _WEATHER_CACHE[key]
+        else:
+            data = _fetch_openmeteo(lat, lon)
+            _WEATHER_CACHE[key] = data
+
+        if city or region or country:
+            data["place"] = {"city": city, "region": region, "country": country}
+
+        return jsonify(data)
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"weather failed: {_safe_str(e)}", 500)
 
 # ========================
 # ------- Routes ---------
