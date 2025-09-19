@@ -349,6 +349,94 @@ def chat():
         traceback.print_exc()
         return _json_error(f"chat failed: {_safe_str(e)}", 500)
 
+# ---------- Unified Image Endpoint ----------
+@app.post("/imagine")
+def imagine():
+    """
+    One endpoint to handle all cases.
+    JSON body:
+      - prompt (required)
+      - image_base64 (optional)
+      - mask_base64 (optional)  # if present + image present => inpaint
+      - style_strength (optional float 0..1, remix only)
+    Behavior:
+      - text only => txt2img (SDXL)
+      - image only + prompt => remix (img2img, SDXL)
+      - image + mask + prompt => inpaint (SDXL-inpaint)
+    """
+    try:
+        if not _safe_image_models_ready():
+            return _json_error("REPLICATE_API_TOKEN not set", 500)
+
+        data = request.get_json(force=True, silent=True) or {}
+        prompt = (data.get("prompt") or "").strip()
+        if not prompt:
+            return _json_error("Missing 'prompt'", 400)
+
+        img_b64  = (data.get("image_base64") or "").strip()
+        mask_b64 = (data.get("mask_base64") or "").strip()
+        style_strength = float(data.get("style_strength") or 0.6)
+
+        # --- CASE A: text-only => txt2img (SDXL)
+        if not img_b64:
+            out = replicate_client.run(
+                REPLICATE_BGGEN_MODEL or REPLICATE_REMIX_MODEL or "stability-ai/sdxl",
+                input={
+                    "prompt": prompt,
+                    "num_inference_steps": 28,
+                    "guidance_scale": 7
+                }
+            )
+            images = out if isinstance(out, list) else [out]
+            images = [u for u in images if u]
+            if not images: return _json_error("No image produced (txt2img)", 500)
+            return jsonify({"ok": True, "mode": "txt2img", "images": images})
+
+        # --- build base image bytes
+        base_img = _b64_to_pil(img_b64)
+        base_bytes = _img_to_bytes(base_img, "PNG")
+
+        # --- CASE B: image + mask => inpaint
+        if mask_b64:
+            mask_img = _b64_to_pil(mask_b64).convert("L")
+            if mask_img.size != base_img.size:
+                mask_img = mask_img.resize(base_img.size, Image.LANCZOS)
+            mask_bytes = _img_to_bytes(mask_img, "PNG")
+
+            out = replicate_client.run(
+                REPLICATE_INPAINT_MODEL or "stability-ai/sdxl-inpaint",
+                input={
+                    "image": base_bytes,
+                    "mask": mask_bytes,
+                    "prompt": prompt,
+                    "num_inference_steps": 35,
+                    "guidance_scale": 7
+                }
+            )
+            images = out if isinstance(out, list) else [out]
+            images = [u for u in images if u]
+            if not images: return _json_error("No image produced (inpaint)", 500)
+            return jsonify({"ok": True, "mode": "inpaint", "images": images})
+
+        # --- CASE C: image only + prompt => remix (img2img)
+        out = replicate_client.run(
+            REPLICATE_REMIX_MODEL or "stability-ai/sdxl",
+            input={
+                "prompt": prompt,
+                "image": base_bytes,
+                "num_inference_steps": 28,
+                "guidance_scale": 7,
+                "strength": style_strength  # some SDXL builds use "strength" instead of "style_strength"
+            }
+        )
+        images = out if isinstance(out, list) else [out]
+        images = [u for u in images if u]
+        if not images: return _json_error("No image produced (remix)", 500)
+        return jsonify({"ok": True, "mode": "remix", "images": images})
+
+    except Exception as e:
+        traceback.print_exc()
+        return _json_error(f"imagine failed: {_safe_str(e)}", 500)
 # ---------- Realtime ----------
 @app.post("/realtime")
 def realtime():
