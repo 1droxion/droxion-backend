@@ -1,13 +1,12 @@
-# app.py  (Droxion backend — branding + images fixed + simple weather card + STT/TTS voice I/O + image/file/deepsearch + IMAGE REMIX SUITE)
-import os, json, uuid, base64, mimetypes, traceback
+# app.py  (Droxion backend — branding + images fixed + weather + STT/TTS + file/deepsearch + IMAGE REMIX SUITE)
+import os, json, uuid, base64, mimetypes, traceback, io, time
 from datetime import datetime
 from urllib.parse import quote, urljoin, urlparse
-import time  # <-- weather cache buckets
-import io    # <-- added
-from PIL import Image  # <-- added
-import replicate       # <-- added
 
 import requests
+from PIL import Image
+import replicate
+
 from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 
@@ -58,14 +57,11 @@ def _json_error(msg: str, status: int = 400):
     return jsonify({"ok": False, "error": msg}), status
 
 def _reject(msg: str, status: int = 400):
-    # same shape as _json_error; used by image routes
     return jsonify({"ok": False, "error": msg}), status
 
 def _safe_str(x) -> str:
-    try:
-        return str(x)
-    except Exception:
-        return "<unprintable>"
+    try: return str(x)
+    except Exception: return "<unprintable>"
 
 def _log_line(payload: dict):
     payload = dict(payload or {})
@@ -77,79 +73,54 @@ def _log_line(payload: dict):
         pass
 
 def _abs_url(u: str) -> str:
-    if not u:
-        return u
-    if u.startswith("http://") or u.startswith("https://"):
-        return u
+    if not u: return u
+    if u.startswith("http://") or u.startswith("https://"): return u
     base = PUBLIC_BASE_URL or (request.host_url.rstrip("/") if request else "")
     return urljoin(base + "/", u.lstrip("/"))
 
 def _mk_web_card(title, url, source=None, snippet=None, image=None, meta=None, ctype="web"):
     return {
-        "type": ctype,
-        "title": title,
-        "url": url,
+        "type": ctype, "title": title, "url": url,
         "source": source or (url.split("/")[2] if "://" in url else "source"),
-        "snippet": snippet,
-        "image": image,
-        "meta": meta
+        "snippet": snippet, "image": image, "meta": meta
     }
 
 # <<< BRANDING >>>
 def _brand_footer(text: str) -> str:
-    """Append a small powered-by footer if content looks like a normal reply."""
     t = (text or "").rstrip()
-    if not t:
-        return t
-    if POWERED_BY_LINE in t:
-        return t
+    if not t or POWERED_BY_LINE in t: return t
     return t + "\n\n" + POWERED_BY_LINE
 
 def _identity_answer(kind: str) -> str:
-    if kind == "who_made":
-        return f"I was created by **{CREATOR_NAME}**. {POWERED_BY_LINE}"
-    if kind == "who_built":
-        return f"I was built by **{CREATOR_NAME}**. {POWERED_BY_LINE}"
-    if kind == "who_created":
-        return f"I was created by **{CREATOR_NAME}**. {POWERED_BY_LINE}"
-    if kind == "your_name":
-        return f"My name is **{ASSISTANT_NAME}**. {POWERED_BY_LINE}"
-    if kind == "powered_by":
-        return f"I'm **powered by Droxion** — fast search, rich cards, and memory. {POWERED_BY_LINE}"
+    if kind == "who_made":   return f"I was created by **{CREATOR_NAME}**. {POWERED_BY_LINE}"
+    if kind == "who_built":  return f"I was built by **{CREATOR_NAME}**. {POWERED_BY_LINE}"
+    if kind == "who_created":return f"I was created by **{CREATOR_NAME}**. {POWERED_BY_LINE}"
+    if kind == "your_name":  return f"My name is **{ASSISTANT_NAME}**. {POWERED_BY_LINE}"
+    if kind == "powered_by": return f"I'm **powered by Droxion** — fast search, rich cards, and memory. {POWERED_BY_LINE}"
     return f"{ASSISTANT_NAME}. {POWERED_BY_LINE}"
 
 def _match_identity_intent(prompt: str):
     p = (prompt or "").lower().strip()
-    if not p:
-        return None
+    if not p: return None
     checks = [
-        (["who made you", "who created you", "who built you", "who developed you"], "who_made"),
-        (["your name", "what is your name", "who are you", "what are you called"], "your_name"),
-        (["powered by", "who powers you", "what powers you"], "powered_by"),
+        (["who made you","who created you","who built you","who developed you"], "who_made"),
+        (["your name","what is your name","who are you","what are you called"], "your_name"),
+        (["powered by","who powers you","what powers you"], "powered_by"),
     ]
     for keys, tag in checks:
-        if any(k in p for k in keys):
-            return tag
+        if any(k in p for k in keys): return tag
     return None
 
 def _trim_for_tts(text: str, limit: int = MAX_TTS_CHARS) -> str:
     t = (text or "").strip()
-    if len(t) <= limit:
-        return t
-    cut = t[:limit]
-    last_dot = cut.rfind(". ")
-    if last_dot > 150:
-        return cut[:last_dot+1]
-    return cut + "…"
+    if len(t) <= limit: return t
+    cut = t[:limit]; last_dot = cut.rfind(". ")
+    return cut[:last_dot+1] if last_dot > 150 else cut + "…"
 
 def _openai_chat(prompt: str) -> str:
-    # Optional – if no key, just echo so app still works for local dev
-    if not OPENAI_API_KEY:
-        return prompt
+    if not OPENAI_API_KEY: return prompt
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-
-    # Strong identity guardrails
     sys_msg = (
         f"You are {ASSISTANT_NAME}, a helpful AI created by {CREATOR_NAME}. "
         f"Never claim you were created by OpenAI. "
@@ -157,56 +128,42 @@ def _openai_chat(prompt: str) -> str:
         f"Prefer numbered lists and tight structure. "
         f"When it fits, end answers with a short footer: '{POWERED_BY_LINE}'."
     )
-
-    data = {
-        "model": OPENAI_CHAT_MODEL,
-        "messages": [
-            {"role": "system", "content": sys_msg},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.5,
-    }
-    r = requests.post(url, headers=headers, json=data, timeout=60)
-    r.raise_for_status()
+    data = {"model": OPENAI_CHAT_MODEL, "messages": [
+        {"role": "system", "content": sys_msg},
+        {"role": "user", "content": prompt}
+    ], "temperature": 0.5}
+    r = requests.post(url, headers=headers, json=data, timeout=60); r.raise_for_status()
     j = r.json()
     return (j["choices"][0]["message"]["content"] or "").strip()
 
 def _openai_vision(prompt: str, img_bytes: bytes, mime: str) -> str:
-    """Use Chat Completions with an image (data URL) if API key is present."""
     if not OPENAI_API_KEY:
         return f"I received your image. {POWERED_BY_LINE}"
     try:
         data_url = f"data:{mime};base64," + base64.b64encode(img_bytes).decode("utf-8")
         url = "https://api.openai.com/v1/chat/completions"
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": OPENAI_CHAT_MODEL,
-            "messages": [
-                {"role": "system", "content": f"You are {ASSISTANT_NAME}, created by {CREATOR_NAME}. Be precise and concise."},
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt or "Describe the image and list the key details in bullets."},
-                    {"type": "image_url", "image_url": {"url": data_url}}
-                ]}
-            ]
-        }
-        r = requests.post(url, headers=headers, json=payload, timeout=120)
-        r.raise_for_status()
+        payload = {"model": OPENAI_CHAT_MODEL, "messages": [
+            {"role": "system", "content": f"You are {ASSISTANT_NAME}, created by {CREATOR_NAME}. Be precise and concise."},
+            {"role": "user", "content": [
+                {"type": "text", "text": prompt or "Describe the image and list key details in bullets."},
+                {"type": "image_url", "image_url": {"url": data_url}}
+            ]}
+        ]}
+        r = requests.post(url, headers=headers, json=payload, timeout=120); r.raise_for_status()
         j = r.json()
         return (j["choices"][0]["message"]["content"] or "").strip()
     except Exception as e:
         _log_line({"vision_error": _safe_str(e)})
         return "I analyzed the image, but couldn't run the AI model. Here’s a generic summary:\n\n- An image was provided.\n- I can still attach helpful sources and examples.\n\n" + POWERED_BY_LINE
 
-# ---- Extra helpers for Image Remix Suite ----
+# ---- Image helpers ----
 def _b64_to_pil(b64_str: str) -> Image.Image:
-    """Accepts data URL or raw base64; returns RGB PIL Image."""
     data = (b64_str or "").split(",")[-1]
     return Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
 
-def _pil_to_b64(img: Image.Image) -> str:
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+def _img_to_bytes(img: Image.Image, mode="PNG") -> io.BytesIO:
+    buf = io.BytesIO(); img.save(buf, format=mode); buf.seek(0); return buf
 
 def _safe_image_models_ready() -> bool:
     return bool(replicate_client)
@@ -246,15 +203,13 @@ def _weather_cards_links(city: str):
     ]
 
 def _time_cards(place: str):
-    p = place.strip() or "London"
-    e = quote(p)
+    p = place.strip() or "London"; e = quote(p)
     return [
         _mk_web_card(f"Current time in {p.title()}", f"https://www.google.com/search?q=time+in+{e}", "google.com", ctype="time"),
         _mk_web_card(f"Time.is — {p.title()}",       f"https://time.is/{e}",                        "time.is",    ctype="time"),
     ]
 
 def _free_image_urls(q: str, n=12):
-    """Return hot-linkable JPEGs from providers that allow direct embedding."""
     qs   = quote(q or "wallpaper")
     rnd  = uuid.uuid4().hex[:8]
     out  = []
@@ -270,8 +225,7 @@ _WEATHER_CACHE = {}
 
 def _client_ip():
     hdr = request.headers.get("X-Forwarded-For", "")
-    if hdr:
-        return hdr.split(",")[0].strip()
+    if hdr: return hdr.split(",")[0].strip()
     return request.remote_addr or "0.0.0.0"
 
 def _ip_to_geo(ip):
@@ -300,11 +254,9 @@ def _fetch_openmeteo(lat, lon):
     w = requests.get(weather_url, timeout=6).json()
     a = requests.get(aqi_url, timeout=6).json()
 
-    cur = w.get("current", {})
-    hourly = w.get("hourly", {})
+    cur = w.get("current", {}); hourly = w.get("hourly", {})
     out = {
-        "lat": lat, "lon": lon,
-        "timezone": w.get("timezone"),
+        "lat": lat, "lon": lon, "timezone": w.get("timezone"),
         "current": {
             "tempC": cur.get("temperature_2m"),
             "feelsLikeC": cur.get("apparent_temperature"),
@@ -365,49 +317,37 @@ def root():
     return jsonify({"ok": True, "service": f"{ASSISTANT_NAME} API", "powered_by": "Droxion", "time": datetime.utcnow().isoformat()})
 
 # ---------- Chat ----------
-@app.post("/inpaint-image")
-def inpaint_image():
+@app.post("/chat")
+def chat():
     try:
-        if not _safe_image_models_ready():
-            return _reject("REPLICATE_API_TOKEN not set on server", 500)
-
         data = request.get_json(force=True, silent=True) or {}
-        base_b64 = (data.get("image_base64") or "").strip()
-        mask_b64 = (data.get("mask_base64") or "").strip()
-        prompt   = (data.get("prompt") or "").strip()
-        if not base_b64: return _reject("No base image.")
-        if not mask_b64: return _reject("No mask image.")
-        if not prompt:   return _reject("Please add a prompt.")
+        prompt = (data.get("prompt") or "").strip()
+        if not prompt:
+            return _json_error("Missing 'prompt'")
 
-        base_img = _b64_to_pil(base_b64).convert("RGBA")
-        mask_img = _b64_to_pil(mask_b64).convert("L")
-        if mask_img.size != base_img.size:
-            mask_img = mask_img.resize(base_img.size, Image.LANCZOS)
+        # Identity overrides
+        id_tag = _match_identity_intent(prompt)
+        if id_tag:
+            reply = _identity_answer(id_tag)
+            return jsonify({"ok": True, "reply": reply})
 
-        # 🔑 Convert to bytes before passing to Replicate
-        base_bytes = io.BytesIO()
-        mask_bytes = io.BytesIO()
-        base_img.save(base_bytes, format="PNG")
-        mask_img.save(mask_bytes, format="PNG")
-        base_bytes.seek(0)
-        mask_bytes.seek(0)
+        low = prompt.lower()
+        if "weather" in low:
+            city = low.replace("weather", "").replace("in", "").strip() or "Ahmedabad"
+            reply = f"### Weather\n1. **City:** {city.title()}\n2. Open the live tracker below.\n\n{POWERED_BY_LINE}"
+            return jsonify({"ok": True, "reply": reply, "cards": _weather_cards_links(city)})
 
-        model = REPLICATE_INPAINT_MODEL
-        out = replicate_client.run(model, input={
-            "image": base_bytes,
-            "mask": mask_bytes,
-            "prompt": prompt,
-            "num_inference_steps": 35,
-            "guidance_scale": 7
-        })
-        images = out if isinstance(out, list) else [out]
-        images = [u for u in images if u]
-        if not images:
-            return _reject("No image produced. Refine the mask or prompt.")
-        return jsonify({"ok": True, "images": images})
+        if "time" in low:
+            place = low.replace("time", "").replace("now", "").replace("in", "").strip() or "London"
+            reply = f"### Time\n1. **Place:** {place.title()}\n2. Tap a source for live time.\n\n{POWERED_BY_LINE}"
+            return jsonify({"ok": True, "reply": reply, "cards": _time_cards(place)})
+
+        raw = _openai_chat(prompt)
+        branded = _brand_footer(raw)
+        return jsonify({"ok": True, "reply": branded})
     except Exception as e:
         traceback.print_exc()
-        return _reject(f"Inpaint failed: {_safe_str(e)}", 500)
+        return _json_error(f"chat failed: {_safe_str(e)}", 500)
 
 # ---------- Realtime ----------
 @app.post("/realtime")
@@ -419,8 +359,7 @@ def realtime():
         if not query:
             return jsonify({"summary": "No query.", "cards": []})
 
-        cards = []
-        images = []
+        cards = []; images = []
         md = f"### Results for **{query}**\n\n{POWERED_BY_LINE}"
 
         if intent == "weather":
@@ -430,15 +369,10 @@ def realtime():
                 "title": f"Weather — {city}",
                 "subtitle": "Tap sources for live details",
                 "icon": "https://openweathermap.org/img/wn/01d.png",
-                "temp_c": None,
-                "temp_f": None,
-                "feels_like_c": None,
-                "feels_like_f": None,
-                "humidity": None,
-                "wind_kph": None,
-                "wind_mph": None,
-                "hourly": [],
-                "daily": []
+                "temp_c": None, "temp_f": None,
+                "feels_like_c": None, "feels_like_f": None,
+                "humidity": None, "wind_kph": None, "wind_mph": None,
+                "hourly": [], "daily": []
             }] + _weather_cards_links(query)
 
         elif intent == "time":
@@ -463,12 +397,7 @@ def realtime():
         else:
             cards = _hq_news_cards(query)
 
-        return jsonify({
-            "summary": f"Results for {query}",
-            "markdown": md,
-            "cards": cards,
-            "images": images
-        })
+        return jsonify({"summary": f"Results for {query}", "markdown": md, "cards": cards, "images": images})
     except Exception as e:
         traceback.print_exc()
         return _json_error(f"realtime failed: {_safe_str(e)}", 500)
@@ -528,30 +457,20 @@ def search_youtube():
         if not YOUTUBE_API_KEY:
             return _json_error("YOUTUBE_API_KEY not set on server", 500)
 
-        params = {
-            "key": YOUTUBE_API_KEY,
-            "part": "snippet",
-            "type": "video",
-            "q": q,
-            "maxResults": 1,
-            "safeSearch": "none",
-        }
+        params = {"key": YOUTUBE_API_KEY, "part": "snippet", "type": "video", "q": q, "maxResults": 1, "safeSearch": "none"}
         r = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=30)
         if r.status_code >= 400:
             return _json_error(f"YouTube API error: {r.status_code} {r.text[:200]}", 500)
-        j = r.json()
-        items = j.get("items") or []
-        if not items:
-            return jsonify({"ok": True, "url": None})
-        vid = items[0]["id"]["videoId"]
-        url = f"https://www.youtube.com/watch?v={vid}"
+        j = r.json(); items = j.get("items") or []
+        if not items: return jsonify({"ok": True, "url": None})
+        vid = items[0]["id"]["videoId"]; url = f"https://www.youtube.com/watch?v={vid}"
         _log_line({"route": "/search-youtube", "q": q, "videoId": vid})
         return jsonify({"ok": True, "url": url})
     except Exception as e:
         traceback.print_exc()
         return _json_error(f"youtube search failed: {_safe_str(e)}", 500)
 
-# ---------- Speech to Text (mic) ----------
+# ---------- Speech to Text ----------
 @app.post("/transcribe")
 def transcribe():
     try:
@@ -566,15 +485,14 @@ def transcribe():
         r = requests.post("https://api.openai.com/v1/audio/transcriptions", headers=headers, data=data, files=files, timeout=120)
         if r.status_code >= 400:
             return _json_error(f"whisper error {r.status_code}: {r.text[:200]}", 500)
-        j = r.json()
-        text = (j.get("text") or "").strip()
+        j = r.json(); text = (j.get("text") or "").strip()
         _log_line({"route":"/transcribe","ok":True,"len":len(text)})
         return jsonify({"ok": True, "text": text})
     except Exception as e:
         traceback.print_exc()
         return _json_error(f"transcribe failed: {_safe_str(e)}", 500)
 
-# ---------- Text to Speech (speak back) ----------
+# ---------- Text to Speech ----------
 @app.post("/tts")
 def tts():
     try:
@@ -584,18 +502,11 @@ def tts():
         txt   = _trim_for_tts(data.get("text") or "")
         voice = data.get("voice") or TTS_VOICE
         fmt   = (data.get("format") or TTS_FORMAT).lower()
-        if not txt:
-            return _json_error("Missing text", 400)
-        if fmt not in ("mp3","wav","opus"):
-            return _json_error("Unsupported format", 400)
+        if not txt: return _json_error("Missing text", 400)
+        if fmt not in ("mp3","wav","opus"): return _json_error("Unsupported format", 400)
 
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-        body = {
-            "model": TTS_MODEL,
-            "voice": voice,
-            "input": txt,
-            "format": fmt
-        }
+        body = {"model": TTS_MODEL, "voice": voice, "input": txt, "format": fmt}
         r = requests.post("https://api.openai.com/v1/audio/speech", headers=headers, json=body, timeout=120)
         if r.status_code >= 400:
             return _json_error(f"tts error {r.status_code}: {r.text[:200]}", 500)
@@ -618,23 +529,19 @@ def analyze_image():
             return _json_error("Missing 'image' form file", 400)
         img = request.files["image"]
         prompt = (request.form.get("prompt") or request.form.get("text") or "").strip()
-        agent  = (request.form.get("agent") or "false").lower() == "true"
         web    = (request.form.get("web") or "false").lower() == "true"
-        persona= (request.form.get("persona") or "").strip()
 
         img_bytes = img.read()
         mime = img.mimetype or "image/jpeg"
 
         ai_desc = _openai_vision(prompt, img_bytes, mime)
 
-        # Save the file to /public/uploads for optional reuse
         name = f"{uuid.uuid4().hex}_{(img.filename or 'image').replace('/', '_')}"
         path = os.path.join(UPLOADS_DIR, name)
         with open(path, "wb") as f:
             f.write(img_bytes)
         public_url = _abs_url(f"/public/uploads/{name}")
 
-        # Try to guess a keyword for images grid
         topic = (prompt or img.filename or "photo").split()[0]
         grid = {"type": "images-grid", "title": f"Images — {topic}", "images": _free_image_urls(topic, 12)}
 
@@ -648,7 +555,7 @@ def analyze_image():
         traceback.print_exc()
         return _json_error(f"analyze-image failed: {_safe_str(e)}", 500)
 
-# ---------- File Analyze (generic) ----------
+# ---------- File Analyze ----------
 @app.post("/file-analyze")
 def file_analyze():
     try:
@@ -659,7 +566,6 @@ def file_analyze():
         size = len(raw)
         mime = f.mimetype or mimetypes.guess_type(f.filename or "")[0] or "application/octet-stream"
 
-        # Save file
         name = f"{uuid.uuid4().hex}_{(f.filename or 'file').replace('/', '_')}"
         path = os.path.join(UPLOADS_DIR, name)
         with open(path, "wb") as fp:
@@ -677,46 +583,17 @@ def file_analyze():
                 preview = "```\n" + "\n".join(snippet) + "\n```"
             except Exception:
                 preview = ""
-        elif mime in ("application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                      "application/msword"):
+        elif mime in ("application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"):
             preview = "_Preview not available for this file type._"
         else:
             preview = "_Binary file uploaded._"
 
-        return jsonify({
-            "ok": True,
-            "title": title,
-            "preview": preview,
-            "url": public_url,
-            "cards": []
-        })
+        return jsonify({"ok": True, "title": title, "preview": preview, "url": public_url, "cards": []})
     except Exception as e:
         traceback.print_exc()
         return _json_error(f"file-analyze failed: {_safe_str(e)}", 500)
 
-# ---------- Deep Research (lightweight) ----------
-@app.post("/deepsearch")
-def deepsearch():
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        q = (data.get("q") or data.get("query") or "").strip()
-        if not q:
-            return _json_error("Missing 'q'")
-
-        # Compose a focused answer using the chat model (if available)
-        answer = _openai_chat(f"Do deep research on: {q}\nReturn a crisp, structured summary with 3 sections: Key Points, Steps/How-to, and Sources to check.")
-
-        cards = _hq_news_cards(q)
-        return jsonify({
-            "ok": True,
-            "answer": _brand_footer(answer),
-            "cards": cards
-        })
-    except Exception as e:
-        traceback.print_exc()
-        return _json_error(f"deepsearch failed: {_safe_str(e)}", 500)
-
-# ---------- Image proxy (fixes hotlink issues) ----------
+# ---------- Image proxy ----------
 @app.get("/img")
 def img_proxy():
     u = request.args.get("url", "")
@@ -737,7 +614,6 @@ def img_proxy():
 # ===============================
 # --- Image Remix Suite ROUTES ---
 # ===============================
-
 @app.post("/remix-image")
 def remix_image():
     """
@@ -756,38 +632,29 @@ def remix_image():
         if not b64:    return _reject("No image provided.")
         if not prompt: return _reject("Please add a prompt.")
 
-        # simple guardrails (extend as needed)
-        bad = ["child sexual", "celebrity deepfake", "beheading", "explicit gore"]
-        p = prompt.lower()
-        if any(k in p for k in bad):
-            return _reject("Prompt violates content policy.")
-
         img = _b64_to_pil(b64)
+        img_bytes = _img_to_bytes(img, "PNG")
 
-        model = REPLICATE_REMIX_MODEL
         inputs = {
             "prompt": prompt,
-            "image": img,
+            "image": img_bytes,            # file-like object
             "guidance_scale": 7,
             "num_inference_steps": 28,
             "style_strength": style_strength,
             "seed": None,
         }
-        # Remove Nones (some models are strict)
-        inputs = {k: v for k, v in inputs.items() if v is not None}
+        inputs = {k:v for k,v in inputs.items() if v is not None}
 
-        out = replicate_client.run(model, input=inputs)
+        out = replicate_client.run(REPLICATE_REMIX_MODEL, input=inputs)
         images = out if isinstance(out, list) else [out]
         images = [u for u in images if u]
-        if not images:
-            return _reject("No image produced. Try a different prompt.")
+        if not images: return _reject("No image produced. Try a different prompt.")
         _log_line({"route": "/remix-image", "ok": True})
         return jsonify({"ok": True, "images": images})
     except Exception as e:
         traceback.print_exc()
         _log_line({"route": "/remix-image", "ok": False, "err": _safe_str(e)})
         return _reject(f"Remix failed: {_safe_str(e)}", 500)
-
 
 @app.post("/inpaint-image")
 def inpaint_image():
@@ -807,22 +674,24 @@ def inpaint_image():
         if not mask_b64: return _reject("No mask image.")
         if not prompt:   return _reject("Please add a prompt.")
 
-        base = _b64_to_pil(base_b64).convert("RGBA")
-        mask = _b64_to_pil(mask_b64).convert("L")
-        if mask.size != base.size:
-            mask = mask.resize(base.size, Image.LANCZOS)
+        base_img = _b64_to_pil(base_b64).convert("RGBA")
+        mask_img = _b64_to_pil(mask_b64).convert("L")
+        if mask_img.size != base_img.size:
+            mask_img = mask_img.resize(base_img.size, Image.LANCZOS)
+
+        base_bytes = _img_to_bytes(base_img, "PNG")
+        mask_bytes = _img_to_bytes(mask_img, "PNG")
 
         out = replicate_client.run(REPLICATE_INPAINT_MODEL, input={
-            "image": base,
-            "mask": mask,
+            "image": base_bytes,
+            "mask": mask_bytes,
             "prompt": prompt,
             "num_inference_steps": 35,
             "guidance_scale": 7
         })
         images = out if isinstance(out, list) else [out]
         images = [u for u in images if u]
-        if not images:
-            return _reject("No image produced. Refine the mask or prompt.")
+        if not images: return _reject("No image produced. Refine the mask or prompt.")
         _log_line({"route": "/inpaint-image", "ok": True})
         return jsonify({"ok": True, "images": images})
     except Exception as e:
@@ -830,11 +699,10 @@ def inpaint_image():
         _log_line({"route": "/inpaint-image", "ok": False, "err": _safe_str(e)})
         return _reject(f"Inpaint failed: {_safe_str(e)}", 500)
 
-
 @app.post("/bg-swap")
 def bg_swap():
     """
-    Background swap: quick remove-bg, then recompose with a prompt scene.
+    Background swap: remove BG, then compose with new scene.
     Body (JSON): { image_base64: dataURL, prompt?: str }
     """
     try:
@@ -847,10 +715,12 @@ def bg_swap():
         if not b64: return _reject("No image provided.")
 
         img = _b64_to_pil(b64)
+        img_bytes = _img_to_bytes(img, "PNG")
 
-        # 1) Remove background
-        cutout = replicate_client.run(REPLICATE_RMBG_MODEL, input={"image": img})
-        # 2) Compose into new scene
+        # 1) Remove background (returns a URL to a PNG with alpha)
+        cutout = replicate_client.run(REPLICATE_RMBG_MODEL, input={"image": img_bytes})
+
+        # 2) Compose into new scene (init image accepted as URL by most txt2img+img2img models)
         out = replicate_client.run(REPLICATE_BGGEN_MODEL, input={
             "prompt": prompt,
             "image": cutout,
@@ -860,8 +730,7 @@ def bg_swap():
         })
         images = out if isinstance(out, list) else [out]
         images = [u for u in images if u]
-        if not images:
-            return _reject("No image produced. Try another prompt.")
+        if not images: return _reject("No image produced. Try another prompt.")
         _log_line({"route": "/bg-swap", "ok": True})
         return jsonify({"ok": True, "images": images})
     except Exception as e:
