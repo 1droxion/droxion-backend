@@ -365,37 +365,49 @@ def root():
     return jsonify({"ok": True, "service": f"{ASSISTANT_NAME} API", "powered_by": "Droxion", "time": datetime.utcnow().isoformat()})
 
 # ---------- Chat ----------
-@app.post("/chat")
-def chat():
+@app.post("/inpaint-image")
+def inpaint_image():
     try:
+        if not _safe_image_models_ready():
+            return _reject("REPLICATE_API_TOKEN not set on server", 500)
+
         data = request.get_json(force=True, silent=True) or {}
-        prompt = (data.get("prompt") or "").strip()
-        if not prompt:
-            return _json_error("Missing 'prompt'")
+        base_b64 = (data.get("image_base64") or "").strip()
+        mask_b64 = (data.get("mask_base64") or "").strip()
+        prompt   = (data.get("prompt") or "").strip()
+        if not base_b64: return _reject("No base image.")
+        if not mask_b64: return _reject("No mask image.")
+        if not prompt:   return _reject("Please add a prompt.")
 
-        # Identity overrides (prevents "created by OpenAI")
-        id_tag = _match_identity_intent(prompt)
-        if id_tag:
-            reply = _identity_answer(id_tag)
-            return jsonify({"ok": True, "reply": reply})
+        base_img = _b64_to_pil(base_b64).convert("RGBA")
+        mask_img = _b64_to_pil(mask_b64).convert("L")
+        if mask_img.size != base_img.size:
+            mask_img = mask_img.resize(base_img.size, Image.LANCZOS)
 
-        low = prompt.lower()
-        if "weather" in low:
-            city = low.replace("weather","").replace("in","").strip() or "Ahmedabad"
-            reply = f"### Weather\n1. **City:** {city.title()}\n2. Open the live tracker below.\n\n{POWERED_BY_LINE}"
-            return jsonify({"ok": True, "reply": reply, "cards": _weather_cards_links(city)})
+        # 🔑 Convert to bytes before passing to Replicate
+        base_bytes = io.BytesIO()
+        mask_bytes = io.BytesIO()
+        base_img.save(base_bytes, format="PNG")
+        mask_img.save(mask_bytes, format="PNG")
+        base_bytes.seek(0)
+        mask_bytes.seek(0)
 
-        if "time" in low:
-            place = low.replace("time","").replace("now","").replace("in","").strip() or "London"
-            reply = f"### Time\n1. **Place:** {place.title()}\n2. Tap a source for live time.\n\n{POWERED_BY_LINE}"
-            return jsonify({"ok": True, "reply": reply, "cards": _time_cards(place)})
-
-        raw = _openai_chat(prompt)
-        branded = _brand_footer(raw)
-        return jsonify({"ok": True, "reply": branded})
+        model = REPLICATE_INPAINT_MODEL
+        out = replicate_client.run(model, input={
+            "image": base_bytes,
+            "mask": mask_bytes,
+            "prompt": prompt,
+            "num_inference_steps": 35,
+            "guidance_scale": 7
+        })
+        images = out if isinstance(out, list) else [out]
+        images = [u for u in images if u]
+        if not images:
+            return _reject("No image produced. Refine the mask or prompt.")
+        return jsonify({"ok": True, "images": images})
     except Exception as e:
         traceback.print_exc()
-        return _json_error(f"chat failed: {_safe_str(e)}", 500)
+        return _reject(f"Inpaint failed: {_safe_str(e)}", 500)
 
 # ---------- Realtime ----------
 @app.post("/realtime")
