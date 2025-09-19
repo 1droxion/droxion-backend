@@ -1,8 +1,11 @@
-# app.py  (Droxion backend — branding + images fixed + simple weather card + STT/TTS voice I/O + image/file/deepsearch)
+# app.py  (Droxion backend — branding + images fixed + simple weather card + STT/TTS voice I/O + image/file/deepsearch + IMAGE REMIX SUITE)
 import os, json, uuid, base64, mimetypes, traceback
 from datetime import datetime
 from urllib.parse import quote, urljoin, urlparse
-import time  # <-- added for weather cache buckets
+import time  # <-- weather cache buckets
+import io    # <-- added
+from PIL import Image  # <-- added
+import replicate       # <-- added
 
 import requests
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -33,6 +36,15 @@ TTS_VOICE           = os.getenv("TTS_VOICE", "alloy")            # alloy | nova 
 TTS_FORMAT          = os.getenv("TTS_FORMAT", "mp3")             # mp3 | wav | opus
 MAX_TTS_CHARS       = int(os.getenv("MAX_TTS_CHARS", "900"))     # safety trim for long answers
 
+# --- Image Remix Suite (Replicate) ---
+REPLICATE_API_TOKEN     = os.getenv("REPLICATE_API_TOKEN", "")
+REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL", "zsxkib/instantid-sdxl:latest")
+REPLICATE_INPAINT_MODEL = os.getenv("REPLICATE_INPAINT_MODEL", "stability-ai/sdxl-inpaint:latest")
+REPLICATE_RMBG_MODEL    = os.getenv("REPLICATE_RMBG_MODEL", "jianfch/stable-diffusion-rembg:latest")
+REPLICATE_BGGEN_MODEL   = os.getenv("REPLICATE_BGGEN_MODEL", "stability-ai/sdxl:latest")
+
+replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN) if REPLICATE_API_TOKEN else None
+
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
@@ -43,6 +55,10 @@ CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=
 # ------ Helpers ---------
 # ========================
 def _json_error(msg: str, status: int = 400):
+    return jsonify({"ok": False, "error": msg}), status
+
+def _reject(msg: str, status: int = 400):
+    # same shape as _json_error; used by image routes
     return jsonify({"ok": False, "error": msg}), status
 
 def _safe_str(x) -> str:
@@ -181,6 +197,20 @@ def _openai_vision(prompt: str, img_bytes: bytes, mime: str) -> str:
         _log_line({"vision_error": _safe_str(e)})
         return "I analyzed the image, but couldn't run the AI model. Here’s a generic summary:\n\n- An image was provided.\n- I can still attach helpful sources and examples.\n\n" + POWERED_BY_LINE
 
+# ---- Extra helpers for Image Remix Suite ----
+def _b64_to_pil(b64_str: str) -> Image.Image:
+    """Accepts data URL or raw base64; returns RGB PIL Image."""
+    data = (b64_str or "").split(",")[-1]
+    return Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
+
+def _pil_to_b64(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+def _safe_image_models_ready() -> bool:
+    return bool(replicate_client)
+
 # ========================
 # ---- Source builders ---
 # ========================
@@ -236,8 +266,6 @@ def _free_image_urls(q: str, n=12):
 # ========================
 # ------- Weather --------
 # ========================
-# Lightweight, keyless weather using Open-Meteo. GPS-first (front-end can pass ?lat&lon),
-# otherwise fall back to IP geolocation. Cache results in 5-minute buckets.
 _WEATHER_CACHE = {}
 
 def _client_ip():
@@ -409,7 +437,6 @@ def realtime():
 
         elif intent == "images":
             images = _free_image_urls(query, n=12)
-            # Provide an images-grid card because the UI prefers it
             cards = [{
                 "type": "images-grid",
                 "title": f"Images — {query}",
@@ -694,6 +721,141 @@ def img_proxy():
         return resp
     except Exception:
         return Response(b"", status=502)
+
+# ===============================
+# --- Image Remix Suite ROUTES ---
+# ===============================
+
+@app.post("/remix-image")
+def remix_image():
+    """
+    Face-preserving remix: keep identity, change style/scene/outfit via prompt.
+    Body (JSON): { image_base64: dataURL, prompt: str, style_strength?: 0..1 }
+    """
+    try:
+        if not _safe_image_models_ready():
+            return _reject("REPLICATE_API_TOKEN not set on server", 500)
+
+        data = request.get_json(force=True, silent=True) or {}
+        b64 = (data.get("image_base64") or "").strip()
+        prompt = (data.get("prompt") or "").strip()
+        style_strength = float(data.get("style_strength") or 0.6)
+
+        if not b64:    return _reject("No image provided.")
+        if not prompt: return _reject("Please add a prompt.")
+
+        # simple guardrails (extend as needed)
+        bad = ["child sexual", "celebrity deepfake", "beheading", "explicit gore"]
+        p = prompt.lower()
+        if any(k in p for k in bad):
+            return _reject("Prompt violates content policy.")
+
+        img = _b64_to_pil(b64)
+
+        model = REPLICATE_REMIX_MODEL
+        inputs = {
+            "prompt": prompt,
+            "image": img,
+            "guidance_scale": 7,
+            "num_inference_steps": 28,
+            "style_strength": style_strength,
+            "seed": None,
+        }
+        # Remove Nones (some models are strict)
+        inputs = {k: v for k, v in inputs.items() if v is not None}
+
+        out = replicate_client.run(model, input=inputs)
+        images = out if isinstance(out, list) else [out]
+        images = [u for u in images if u]
+        if not images:
+            return _reject("No image produced. Try a different prompt.")
+        _log_line({"route": "/remix-image", "ok": True})
+        return jsonify({"ok": True, "images": images})
+    except Exception as e:
+        traceback.print_exc()
+        _log_line({"route": "/remix-image", "ok": False, "err": _safe_str(e)})
+        return _reject(f"Remix failed: {_safe_str(e)}", 500)
+
+
+@app.post("/inpaint-image")
+def inpaint_image():
+    """
+    Mask edit: white = edit, black = keep.
+    Body (JSON): { image_base64: dataURL, mask_base64: dataURL, prompt: str }
+    """
+    try:
+        if not _safe_image_models_ready():
+            return _reject("REPLICATE_API_TOKEN not set on server", 500)
+
+        data = request.get_json(force=True, silent=True) or {}
+        base_b64 = (data.get("image_base64") or "").strip()
+        mask_b64 = (data.get("mask_base64") or "").strip()
+        prompt   = (data.get("prompt") or "").strip()
+        if not base_b64: return _reject("No base image.")
+        if not mask_b64: return _reject("No mask image.")
+        if not prompt:   return _reject("Please add a prompt.")
+
+        base = _b64_to_pil(base_b64).convert("RGBA")
+        mask = _b64_to_pil(mask_b64).convert("L")
+        if mask.size != base.size:
+            mask = mask.resize(base.size, Image.LANCZOS)
+
+        out = replicate_client.run(REPLICATE_INPAINT_MODEL, input={
+            "image": base,
+            "mask": mask,
+            "prompt": prompt,
+            "num_inference_steps": 35,
+            "guidance_scale": 7
+        })
+        images = out if isinstance(out, list) else [out]
+        images = [u for u in images if u]
+        if not images:
+            return _reject("No image produced. Refine the mask or prompt.")
+        _log_line({"route": "/inpaint-image", "ok": True})
+        return jsonify({"ok": True, "images": images})
+    except Exception as e:
+        traceback.print_exc()
+        _log_line({"route": "/inpaint-image", "ok": False, "err": _safe_str(e)})
+        return _reject(f"Inpaint failed: {_safe_str(e)}", 500)
+
+
+@app.post("/bg-swap")
+def bg_swap():
+    """
+    Background swap: quick remove-bg, then recompose with a prompt scene.
+    Body (JSON): { image_base64: dataURL, prompt?: str }
+    """
+    try:
+        if not _safe_image_models_ready():
+            return _reject("REPLICATE_API_TOKEN not set on server", 500)
+
+        data = request.get_json(force=True, silent=True) or {}
+        b64 = (data.get("image_base64") or "").strip()
+        prompt = (data.get("prompt") or "").strip() or "subject on a clean studio background"
+        if not b64: return _reject("No image provided.")
+
+        img = _b64_to_pil(b64)
+
+        # 1) Remove background
+        cutout = replicate_client.run(REPLICATE_RMBG_MODEL, input={"image": img})
+        # 2) Compose into new scene
+        out = replicate_client.run(REPLICATE_BGGEN_MODEL, input={
+            "prompt": prompt,
+            "image": cutout,
+            "strength": 0.65,
+            "num_inference_steps": 28,
+            "guidance_scale": 7
+        })
+        images = out if isinstance(out, list) else [out]
+        images = [u for u in images if u]
+        if not images:
+            return _reject("No image produced. Try another prompt.")
+        _log_line({"route": "/bg-swap", "ok": True})
+        return jsonify({"ok": True, "images": images})
+    except Exception as e:
+        traceback.print_exc()
+        _log_line({"route": "/bg-swap", "ok": False, "err": _safe_str(e)})
+        return _reject(f"BG swap failed: {_safe_str(e)}", 500)
 
 # ---------- Static ----------
 @app.get("/public/<path:filename>")
