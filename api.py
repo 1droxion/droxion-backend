@@ -1,7 +1,5 @@
-# api.py — Droxion backend (Flask + Replicate)
-import os
-import io
-import base64
+# api.py (add this route)
+import os, io, base64
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import replicate
@@ -9,121 +7,145 @@ import replicate
 app = Flask(__name__)
 CORS(app)
 
-# ---- Replicate client ----
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
-if not REPLICATE_API_TOKEN:
-    raise RuntimeError("REPLICATE_API_TOKEN missing")
-rep = replicate.Client(api_token=REPLICATE_API_TOKEN)
+# env:
+# REPLICATE_API_TOKEN=xxxxxxxx
+# IMG_TEXT2IMG_MODEL="black-forest-labs/flux-schnell"
+# IMG_TEXT2IMG_VERSION="PUT_LATEST_VERSION_HASH_HERE"
+# IMG_REPIX_MODEL="timbrooks/instruct-pix2pix"
+# IMG_REPIX_VERSION="PUT_LATEST_VERSION_HASH_HERE"
+# IMG_INPAINT_MODEL="stability-ai/stable-diffusion-inpainting"
+# IMG_INPAINT_VERSION="PUT_LATEST_VERSION_HASH_HERE"
 
-# ---- Model IDs from env (versions optional) ----
-REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL",   "stability-ai/stable-diffusion-3.5-large")
-REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")
+def _b64_to_data_url(b64_bytes, mime="image/png"):
+    return f"data:{mime};base64,{base64.b64encode(b64_bytes).decode()}"
 
-INPAINT_MODEL   = os.getenv("REPLICATE_INPAINT_MODEL",   "lucataco/sdxl-inpainting")
-INPAINT_VERSION = os.getenv("REPLICATE_INPAINT_VERSION", "")
+def _file_to_data_url(fs_file, mime="image/png"):
+    # fs_file is werkzeug FileStorage
+    content = fs_file.read()
+    fs_file.seek(0)
+    return _b64_to_data_url(content, mime=mime)
 
-RMBG_MODEL   = os.getenv("REPLICATE_RMBG_MODEL",   "jianfch/stable-diffusion-rembg")
-RMBG_VERSION = os.getenv("REPLICATE_RMBG_VERSION", "")
-
-
-def _b64_to_bytesio(data_url: str) -> io.BytesIO:
-    """Accepts 'data:image/png;base64,...' or raw base64, returns BytesIO."""
-    if "," in data_url:
-        data_url = data_url.split(",", 1)[1]
-    return io.BytesIO(base64.b64decode(data_url))
-
-
-@app.get("/")
-def root():
-    return jsonify({
-        "ok": True,
-        "REPLICATE_API_TOKEN_set": bool(REPLICATE_API_TOKEN),
-        "remix_model_env": REMIX_MODEL,
-        "remix_version_env": REMIX_VERSION,
-        "inpaint_model_env": INPAINT_MODEL,
-        "inpaint_version_env": INPAINT_VERSION,
-        "rmbg_model_env": RMBG_MODEL,
-        "rmbg_version_env": RMBG_VERSION,
-    })
-
-
-@app.post("/remix-image")
-def remix_image():
+def _stringify_output(result):
+    """
+    Replicate can return: list[str URLs], list[FileOutput], single URL, etc.
+    Normalize to list[str].
+    """
+    if result is None:
+        return []
+    if isinstance(result, (str,)):
+        return [result]
+    if isinstance(result, list):
+        out = []
+        for x in result:
+            # FileOutput has .url or string cast
+            try:
+                if hasattr(x, "url"):
+                    out.append(str(x.url))
+                else:
+                    out.append(str(x))
+            except Exception:
+                out.append(str(x))
+        return out
+    # Fallback for dict or other
     try:
-        payload = request.get_json(force=True)
-        image_b64 = payload.get("image_base64")
-        prompt = payload.get("prompt", "")
-        style_strength = float(payload.get("style_strength", 0.6))
+        if hasattr(result, "url"):
+            return [str(result.url)]
+        return [str(result)]
+    except Exception:
+        return [repr(result)]
 
-        if not image_b64:
-            return jsonify({"ok": False, "error": "image_base64 required"}), 400
+@app.post("/image")
+def image_endpoint():
+    """
+    Universal image endpoint.
+    Body: multipart/form-data or JSON
+      mode: "text2img" | "remix" | "inpaint"
+      prompt: str
+      negative_prompt?: str
+      image?: file (for remix/inpaint)
+      mask?: file (for inpaint; white=change, black=keep)
+      strength?: float (0..1) for remix
+      width?, height?: ints (optional, text2img)
+    """
+    mode = (request.form.get("mode") or request.json.get("mode") if request.is_json else "").strip().lower()
+    prompt = (request.form.get("prompt") or (request.json.get("prompt") if request.is_json else "")).strip()
+    negative = (request.form.get("negative_prompt") or (request.json.get("negative_prompt") if request.is_json else "")).strip()
 
-        img_io = _b64_to_bytesio(image_b64)
-        model = f"{REMIX_MODEL}:{REMIX_VERSION}" if REMIX_VERSION else REMIX_MODEL
+    if not mode:
+        return jsonify({"error": "mode required"}), 400
+    if not prompt:
+        return jsonify({"error": "prompt required"}), 400
 
-        out = rep.run(model, input={
-            "image": img_io,
-            "prompt": prompt,
-            "strength": style_strength,  # ignored by some models; safe to include
-        })
+    # Optional params
+    strength = float(request.form.get("strength") or (request.json.get("strength") if request.is_json else 0.6) or 0.6)
+    width = int(request.form.get("width") or (request.json.get("width") if request.is_json else 768) or 768)
+    height = int(request.form.get("height") or (request.json.get("height") if request.is_json else 768) or 768)
 
-        images = out if isinstance(out, list) else [out]
-        return jsonify({"ok": True, "images": images})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.post("/inpaint-image")
-def inpaint_image():
     try:
-        payload = request.get_json(force=True)
-        image_b64 = payload.get("image_base64")
-        mask_b64  = payload.get("mask_base64")
-        prompt = payload.get("prompt", "")
+        if mode == "text2img":
+            model = os.environ.get("IMG_TEXT2IMG_MODEL", "black-forest-labs/flux-schnell")
+            version = os.environ.get("IMG_TEXT2IMG_VERSION", "")
+            # NOTE: paste a valid version hash from Replicate into env to avoid 422.
+            out = replicate.run(
+                f"{model}:{version}" if version else model,
+                input={
+                    "prompt": prompt,
+                    "width": width,
+                    "height": height,
+                    # Some models accept negative_prompt; harmless to include if ignored
+                    "negative_prompt": negative or None,
+                }
+            )
 
-        if not image_b64 or not mask_b64:
-            return jsonify({"ok": False, "error": "image_base64 and mask_base64 required"}), 400
+        elif mode == "remix":
+            # Requires an image
+            if "image" not in request.files:
+                return jsonify({"error": "image file required for remix"}), 400
+            image = request.files["image"]
+            img_data_url = _file_to_data_url(image)
 
-        img_io  = _b64_to_bytesio(image_b64)
-        mask_io = _b64_to_bytesio(mask_b64)
-        model = f"{INPAINT_MODEL}:{INPAINT_VERSION}" if INPAINT_VERSION else INPAINT_MODEL
+            model = os.environ.get("IMG_REPIX_MODEL", "timbrooks/instruct-pix2pix")
+            version = os.environ.get("IMG_REPIX_VERSION", "")
+            out = replicate.run(
+                f"{model}:{version}" if version else model,
+                input={
+                    "image": img_data_url,
+                    "prompt": prompt,
+                    "num_outputs": 1,
+                    "guidance_scale": 7.5,
+                    "image_guidance_scale": max(0.0, min(strength, 1.0)),  # 0..1
+                }
+            )
 
-        out = rep.run(model, input={
-            "image": img_io,
-            "mask":  mask_io,
-            "prompt": prompt,
-        })
+        elif mode == "inpaint":
+            if "image" not in request.files or "mask" not in request.files:
+                return jsonify({"error": "image and mask files required for inpaint"}), 400
+            image = request.files["image"]
+            mask = request.files["mask"]
+            img_data_url = _file_to_data_url(image)
+            mask_data_url = _file_to_data_url(mask)
 
-        images = out if isinstance(out, list) else [out]
-        return jsonify({"ok": True, "images": images})
+            model = os.environ.get("IMG_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
+            version = os.environ.get("IMG_INPAINT_VERSION", "")
+            out = replicate.run(
+                f"{model}:{version}" if version else model,
+                input={
+                    "image": img_data_url,
+                    "mask": mask_data_url,
+                    "prompt": prompt,
+                    "negative_prompt": negative or None,
+                    "width": width, "height": height,
+                }
+            )
+
+        else:
+            return jsonify({"error": f"unknown mode '{mode}'"}), 400
+
+        urls = _stringify_output(out)
+        return jsonify({"ok": True, "outputs": urls})
+
+    except replicate.exceptions.ReplicateError as e:
+        # Typical 422 from invalid version/perms
+        return jsonify({"ok": False, "error": "replicate_error", "detail": str(e)}), 422
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.post("/bg-swap")
-def bg_swap():
-    """Background remove/replace. If no prompt: transparent PNG output."""
-    try:
-        payload = request.get_json(force=True)
-        image_b64 = payload.get("image_base64")
-        prompt = payload.get("prompt", "")
-
-        if not image_b64:
-            return jsonify({"ok": False, "error": "image_base64 required"}), 400
-
-        img_io = _b64_to_bytesio(image_b64)
-        model = f"{RMBG_MODEL}:{RMBG_VERSION}" if RMBG_VERSION else RMBG_MODEL
-
-        out = rep.run(model, input={
-            "image": img_io,
-            "prompt": prompt or None,
-        })
-
-        images = out if isinstance(out, list) else [out]
-        return jsonify({"ok": True, "images": images})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+        return jsonify({"ok": False, "error": "server_error", "detail": str(e)}), 500
