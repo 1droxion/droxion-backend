@@ -45,7 +45,7 @@ REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL",   "stability-ai/sdx
 REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")                  # optional
 
 REPLICATE_INPAINT_MODEL   = os.getenv("REPLICATE_INPAINT_MODEL",   "stability-ai/stable-diffusion-inpainting")
-REPLICATE_INPAINT_VERSION = os.getenv("REPLICATE_INPAINT_VERSION", "a9758cbf7ce14f33a6178d99d12b8f0d9d4cd7c33c3d08efb505de87f1cfcc0b")
+REPLICATE_INPAINT_VERSION = os.getenv("REPLICATE_INPAINT_VERSION", "8820991880abea5f1a57722e6ca1625117e39312")
 
 REPLICATE_RMBG_MODEL    = os.getenv("REPLICATE_RMBG_MODEL",    "jianfch/stable-diffusion-rembg")
 REPLICATE_RMBG_VERSION  = os.getenv("REPLICATE_RMBG_VERSION",  "")  # optional
