@@ -39,7 +39,8 @@ MAX_TTS_CHARS       = int(os.getenv("MAX_TTS_CHARS", "900"))     # safety trim f
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
 
 # IMPORTANT: never put :latest in these; version gets appended below if provided.
-# Remix (img2img). SD3.5 Large supports img2img reliably.
+
+# Remix (img2img). SD 3.5 Large supports img2img reliably.
 REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL", "stability-ai/stable-diffusion-3.5-large")
 REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")  # optional but recommended
 
@@ -47,7 +48,7 @@ REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")  # optional b
 REPLICATE_INPAINT_MODEL   = os.getenv("REPLICATE_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
 REPLICATE_INPAINT_VERSION = os.getenv(
     "REPLICATE_INPAINT_VERSION",
-    "4c57606c6c1f7483f8af9e90c2bc88a0154b390b52e7e0c1b0cb8d8d8c488c45"
+    "8d50e2f8e2841c26aeb4808e88e84f1cf5a08f2b65c0a36d6d3e5ff5d0f3fd3b"
 )
 
 # Remove BG and background generator
@@ -369,7 +370,7 @@ def imagine():
 
         img_b64  = (data.get("image_base64") or "").strip()
         mask_b64 = (data.get("mask_base64") or "").strip()
-        style_strength = float(data.get("style_strength") or 0.6)
+        style_strength = float(data.get("style_strength") or 0.35)
 
         # --- CASE A: text-only => txt2img (SDXL)
         if not img_b64:
@@ -411,10 +412,11 @@ def imagine():
             return jsonify({"ok": True, "mode": "inpaint", "images": images})
 
         # --- CASE C: image only + prompt => remix (img2img)
+        style_strength = max(0.05, min(style_strength, 0.6))
         out = replicate_client.run(
             _spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION),
             input={
-                "prompt": prompt,
+                "prompt": f"keep identity and background identical; {prompt}",
                 "image": base_bytes,
                 "strength": style_strength,     # SD3.5 uses 'strength'
                 "num_inference_steps": 28,
@@ -707,7 +709,8 @@ def remix_image():
         data = request.get_json(force=True, silent=True) or {}
         b64 = (data.get("image_base64") or "").strip()
         prompt = (data.get("prompt") or "").strip()
-        style_strength = float(data.get("style_strength") or 0.6)
+        style_strength = float(data.get("style_strength") or 0.35)
+        style_strength = max(0.05, min(style_strength, 0.6))
 
         if not b64:    return _reject("No image provided.")
         if not prompt: return _reject("Please add a prompt.")
@@ -718,9 +721,9 @@ def remix_image():
         out = replicate_client.run(
             _spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION),
             input={
-                "prompt": prompt,
+                "prompt": f"keep identity and background identical; {prompt}",
                 "image": img_bytes,           # img2img
-                "strength": style_strength,   # SD3.5 uses 'strength'
+                "strength": style_strength,   # SD3/3.5 uses 'strength'
                 "num_inference_steps": 28,
                 "guidance_scale": 7,
             }
@@ -799,8 +802,6 @@ def bg_swap():
 
         # 1) Remove background (returns a URL/PNG)
         cutout = replicate_client.run(_spec(REPLICATE_RMBG_MODEL, REPLICATE_RMBG_VERSION), input={"image": img_bytes})
-
-        # Normalize just in case RMBG returns a list/dict
         cut_urls = _replicate_to_urls(cutout)
         cut_src = cut_urls[0] if cut_urls else str(cutout)
 
