@@ -1,4 +1,5 @@
-# app.py  (Droxion backend — branding + images fixed + weather + STT/TTS + file/deepsearch + IMAGE REMIX SUITE)
+# app.py  (Droxion backend — models fixed + optional versions + weather + STT/TTS + deepsearch + IMAGE REMIX SUITE)
+
 import os, json, uuid, base64, mimetypes, traceback, io, time
 from datetime import datetime
 from urllib.parse import quote, urljoin, urlparse
@@ -28,34 +29,25 @@ CREATOR_NAME        = os.getenv("CREATOR_NAME", "Dhruv Patel")
 ASSISTANT_NAME      = os.getenv("ASSISTANT_NAME", "Droxion")
 POWERED_BY_LINE     = os.getenv("POWERED_BY_LINE", "— Powered by Droxion")
 
-# Voice I/O (speech-to-text & text-to-speech)
-WHISPER_MODEL       = os.getenv("WHISPER_MODEL", "whisper-1")    # speech → text
-TTS_MODEL           = os.getenv("TTS_MODEL", "tts-1")            # text  → speech
-TTS_VOICE           = os.getenv("TTS_VOICE", "alloy")            # alloy | nova | verse | etc.
-TTS_FORMAT          = os.getenv("TTS_FORMAT", "mp3")             # mp3 | wav | opus
-MAX_TTS_CHARS       = int(os.getenv("MAX_TTS_CHARS", "900"))     # safety trim for long answers
+# Voice I/O
+WHISPER_MODEL       = os.getenv("WHISPER_MODEL", "whisper-1")
+TTS_MODEL           = os.getenv("TTS_MODEL", "tts-1")
+TTS_VOICE           = os.getenv("TTS_VOICE", "alloy")
+TTS_FORMAT          = os.getenv("TTS_FORMAT", "mp3")
+MAX_TTS_CHARS       = int(os.getenv("MAX_TTS_CHARS", "900"))
 
-# --- Image Remix Suite (Replicate) ---
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
+# --- Replicate models (safe defaults) ---
+REPLICATE_API_TOKEN     = os.getenv("REPLICATE_API_TOKEN", "")
+REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL",   "stability-ai/stable-diffusion-3.5-large") # txt2img & img2img
+REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")  # optional
 
-# IMPORTANT: never put :latest in these; version gets appended below if provided.
+REPLICATE_INPAINT_MODEL   = os.getenv("REPLICATE_INPAINT_MODEL",   "lucataco/sdxl-inpainting")
+REPLICATE_INPAINT_VERSION = os.getenv("REPLICATE_INPAINT_VERSION", "")  # keep empty unless pinning
 
-# Remix (img2img). SD 3.5 Large supports img2img reliably.
-REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL", "stability-ai/stable-diffusion-3.5-large")
-REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")  # optional but recommended
+REPLICATE_RMBG_MODEL    = os.getenv("REPLICATE_RMBG_MODEL",    "jianfch/stable-diffusion-rembg")
+REPLICATE_RMBG_VERSION  = os.getenv("REPLICATE_RMBG_VERSION",  "")  # optional
 
-# Inpaint (mask editing) — pinned to a known-good public version to avoid 422s.
-REPLICATE_INPAINT_MODEL   = os.getenv("REPLICATE_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
-REPLICATE_INPAINT_VERSION = os.getenv(
-    "REPLICATE_INPAINT_VERSION",
-    "8d50e2f8e2841c26aeb4808e88e84f1cf5a08f2b65c0a36d6d3e5ff5d0f3fd3b"
-)
-
-# Remove BG and background generator
-REPLICATE_RMBG_MODEL   = os.getenv("REPLICATE_RMBG_MODEL", "jianfch/stable-diffusion-rembg")
-REPLICATE_RMBG_VERSION = os.getenv("REPLICATE_RMBG_VERSION", "")  # optional
-
-REPLICATE_BGGEN_MODEL   = os.getenv("REPLICATE_BGGEN_MODEL", "stability-ai/sdxl")
+REPLICATE_BGGEN_MODEL   = os.getenv("REPLICATE_BGGEN_MODEL",   "stability-ai/sdxl")
 REPLICATE_BGGEN_VERSION = os.getenv("REPLICATE_BGGEN_VERSION", "")  # optional
 
 replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN) if REPLICATE_API_TOKEN else None
@@ -140,7 +132,6 @@ def _openai_chat(prompt: str) -> str:
     sys_msg = (
         f"You are {ASSISTANT_NAME}, a helpful AI created by {CREATOR_NAME}. "
         f"Never claim you were created by OpenAI. "
-        f"If asked about who made you, ALWAYS say {CREATOR_NAME}. "
         f"Prefer numbered lists and tight structure. "
         f"When it fits, end answers with a short footer: '{POWERED_BY_LINE}'."
     )
@@ -184,34 +175,66 @@ def _img_to_bytes(img: Image.Image, mode="PNG") -> io.BytesIO:
 def _safe_image_models_ready() -> bool:
     return bool(replicate_client)
 
-def _replicate_to_urls(out):
+def _replicate_run(model: str, version: str, inputs: dict):
     """
-    Normalize Replicate responses into a list of URL strings.
-    Handles lists (FileOutput/str), dicts with 'images', and single objects.
+    Always call replicate.run with 'owner/model[:version]'.
+    Only append ':version' if provided. This avoids 422 errors and JSON
+    serialization issues from predictions.create.
     """
-    try:
-        if isinstance(out, list):
-            return [str(x) for x in out if x]
-        if isinstance(out, dict):
-            if "images" in out and isinstance(out["images"], list):
-                return [str(x) for x in out["images"] if x]
-            if "output" in out and isinstance(out["output"], dict) and "images" in out["output"]:
-                return [str(x) for x in out["output"]["images"] if x]
-            for k in ("image", "url", "result"):
-                if k in out and out[k]:
-                    v = out[k]
-                    if isinstance(v, list):
-                        return [str(x) for x in v if x]
-                    return [str(v)]
-        s = str(out)
-        return [s] if s else []
-    except Exception:
-        return []
+    if not replicate_client:
+        raise RuntimeError("REPLICATE_API_TOKEN not set")
+    spec = f"{model}:{version}" if (version or "").strip() else model
+    return replicate_client.run(spec, input={k: v for k, v in (inputs or {}).items() if v is not None})
 
-def _spec(model: str, version: str = "") -> str:
-    """Return 'owner/model:version' if version provided and ':' not already in model."""
-    if ":" in (model or ""): return model
-    return f"{model}:{version}" if version else model
+# ========================
+# ---- Source builders ---
+# ========================
+def _hq_news_cards(q: str):
+    e = quote(q)
+    return [
+        _mk_web_card(f"Forbes — {q}",               f"https://www.forbes.com/search/?q={e}",          "forbes.com",   ctype="news"),
+        _mk_web_card(f"Bloomberg — {q}",            f"https://www.bloomberg.com/search?query={e}",    "bloomberg.com",ctype="news"),
+        _mk_web_card(f"Reuters — {q}",              f"https://www.reuters.com/site-search/?query={e}","reuters.com",  ctype="news"),
+        _mk_web_card(f"CNBC — {q}",                 f"https://www.cnbc.com/search/?query={e}",        "cnbc.com",     ctype="news"),
+        _mk_web_card(f"Google News — {q}",          f"https://news.google.com/search?q={e}",          "news.google.com",ctype="news"),
+        _mk_web_card(f"Wikipedia — {q}",            f"https://en.wikipedia.org/wiki/{quote(q.replace(' ','_'))}", "wikipedia.org", ctype="wiki"),
+        _mk_web_card(f"Google — {q}",               f"https://www.google.com/search?q={e}",           "google.com"),
+    ]
+
+def _crypto_cards(q: str):
+    e = q.lower()
+    sym = "bitcoin" if ("bitcoin" in e or "btc" in e) else ("ethereum" if ("ethereum" in e or "eth" in e) else q)
+    s = quote(sym)
+    return [
+        _mk_web_card(f"CoinMarketCap — {sym}", f"https://coinmarketcap.com/currencies/{s}/", "coinmarketcap.com", ctype="crypto"),
+        _mk_web_card(f"CoinGecko — {sym}",     f"https://www.coingecko.com/en/coins/{s}",   "coingecko.com",     ctype="crypto"),
+        _mk_web_card(f"CoinDesk — {q}",        f"https://www.coindesk.com/search/{quote(q)}","coindesk.com",     ctype="news"),
+        _mk_web_card(f"Cointelegraph — {q}",   f"https://cointelegraph.com/search?query={quote(q)}","cointelegraph.com",ctype="news"),
+    ]
+
+def _weather_cards_links(city: str):
+    e = quote(city)
+    return [
+        _mk_web_card(f"Google Weather — {city.title()}", f"https://www.google.com/search?q={e}+weather","google.com",ctype="weather"),
+        _mk_web_card(f"Weather.com — {city.title()}",    f"https://weather.com/search/enhancedlocalsearch?where={e}","weather.com", ctype="weather"),
+        _mk_web_card(f"AccuWeather — {city.title()}",    f"https://www.accuweather.com/en/search-locations?query={e}","accuweather.com",ctype="weather"),
+    ]
+
+def _time_cards(place: str):
+    p = place.strip() or "London"; e = quote(p)
+    return [
+        _mk_web_card(f"Current time in {p.title()}", f"https://www.google.com/search?q=time+in+{e}", "google.com", ctype="time"),
+        _mk_web_card(f"Time.is — {p.title()}",       f"https://time.is/{e}",                        "time.is",    ctype="time"),
+    ]
+
+def _free_image_urls(q: str, n=12):
+    qs   = quote(q or "wallpaper")
+    rnd  = uuid.uuid4().hex[:8]
+    out  = []
+    for i in range(min(4, n)): out.append(f"https://picsum.photos/seed/{rnd}-{i}/900/600.jpg")
+    for i in range(min(4, n - len(out))): out.append(f"https://loremflickr.com/900/600/{qs}?lock={i}")
+    for i in range(min(6, n - len(out))): out.append(f"https://source.unsplash.com/900x600/?{qs}&sig={i}&_b={rnd}")
+    return out[:n]
 
 # ========================
 # ------- Weather --------
@@ -304,23 +327,30 @@ def weather():
         traceback.print_exc()
         return _json_error(f"weather failed: {_safe_str(e)}", 500)
 
-@app.get("/debug-replicate")
-def debug_replicate():
-    return jsonify({
-        "REPLICATE_API_TOKEN_set": bool(REPLICATE_API_TOKEN),
-        "inpaint_model_env": REPLICATE_INPAINT_MODEL,
-        "inpaint_version_env": REPLICATE_INPAINT_VERSION,
-        "remix_model_env": REPLICATE_REMIX_MODEL,
-        "remix_version_env": REPLICATE_REMIX_VERSION,
-        "rmbg_model_env": REPLICATE_RMBG_MODEL,
-        "bggen_model_env": REPLICATE_BGGEN_MODEL,
-    })
 # ========================
 # ------- Routes ---------
 # ========================
 @app.route("/", methods=["GET"])
 def root():
     return jsonify({"ok": True, "service": f"{ASSISTANT_NAME} API", "powered_by": "Droxion", "time": datetime.utcnow().isoformat()})
+
+# ---------- DEBUG: show what envs the server sees ----------
+@app.get("/_debug/replicate-env")
+def debug_replicate_env():
+    try:
+        return jsonify({
+            "REPLICATE_API_TOKEN_set": bool(REPLICATE_API_TOKEN),
+            "bggen_model_env": REPLICATE_BGGEN_MODEL,
+            "bggen_version_env": REPLICATE_BGGEN_VERSION,
+            "inpaint_model_env": REPLICATE_INPAINT_MODEL,
+            "inpaint_version_env": REPLICATE_INPAINT_VERSION,
+            "remix_model_env": REPLICATE_REMIX_MODEL,
+            "remix_version_env": REPLICATE_REMIX_VERSION,
+            "rmbg_model_env": REPLICATE_RMBG_MODEL,
+            "rmbg_version_env": REPLICATE_RMBG_VERSION,
+        })
+    except Exception as e:
+        return _json_error(_safe_str(e), 500)
 
 # ---------- Chat ----------
 @app.post("/chat")
@@ -366,9 +396,9 @@ def imagine():
       - mask_base64 (optional)  # if present + image present => inpaint
       - style_strength (optional float 0..1, remix only)
     Behavior:
-      - text only => txt2img (SDXL)
-      - image only + prompt => remix (img2img, SD3.5 Large)
-      - image + mask + prompt => inpaint (Stable Diffusion Inpainting)
+      - text only => txt2img (SDXL/SD3.5)
+      - image only + prompt => remix (img2img)
+      - image + mask + prompt => inpaint
     """
     try:
         if not _safe_image_models_ready():
@@ -381,19 +411,17 @@ def imagine():
 
         img_b64  = (data.get("image_base64") or "").strip()
         mask_b64 = (data.get("mask_base64") or "").strip()
-        style_strength = float(data.get("style_strength") or 0.35)
+        style_strength = float(data.get("style_strength") or 0.6)
 
-        # --- CASE A: text-only => txt2img (SDXL)
+        # --- CASE A: text-only => txt2img
         if not img_b64:
-            out = replicate_client.run(
-                _spec(REPLICATE_BGGEN_MODEL, REPLICATE_BGGEN_VERSION),
-                input={
-                    "prompt": prompt,
-                    "num_inference_steps": 28,
-                    "guidance_scale": 7
-                }
-            )
-            images = _replicate_to_urls(out)
+            out = _replicate_run(REPLICATE_BGGEN_MODEL or REPLICATE_REMIX_MODEL, REPLICATE_BGGEN_VERSION, {
+                "prompt": prompt,
+                "num_inference_steps": 28,
+                "guidance_scale": 7
+            })
+            images = out if isinstance(out, list) else [out]
+            images = [u for u in images if u]
             if not images: return _json_error("No image produced (txt2img)", 500)
             return jsonify({"ok": True, "mode": "txt2img", "images": images})
 
@@ -408,33 +436,28 @@ def imagine():
                 mask_img = mask_img.resize(base_img.size, Image.LANCZOS)
             mask_bytes = _img_to_bytes(mask_img, "PNG")
 
-            out = replicate_client.run(
-                _spec(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION),
-                input={
-                    "image": base_bytes,
-                    "mask": mask_bytes,
-                    "prompt": prompt,
-                    "num_inference_steps": 35,
-                    "guidance_scale": 7
-                }
-            )
-            images = _replicate_to_urls(out)
+            out = _replicate_run(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION, {
+                "image": base_bytes,
+                "mask": mask_bytes,
+                "prompt": prompt,
+                "num_inference_steps": 35,
+                "guidance_scale": 7
+            })
+            images = out if isinstance(out, list) else [out]
+            images = [u for u in images if u]
             if not images: return _json_error("No image produced (inpaint)", 500)
             return jsonify({"ok": True, "mode": "inpaint", "images": images})
 
         # --- CASE C: image only + prompt => remix (img2img)
-        style_strength = max(0.05, min(style_strength, 0.6))
-        out = replicate_client.run(
-            _spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION),
-            input={
-                "prompt": f"keep identity and background identical; {prompt}",
-                "image": base_bytes,
-                "strength": style_strength,     # SD3.5 uses 'strength'
-                "num_inference_steps": 28,
-                "guidance_scale": 7,
-            }
-        )
-        images = _replicate_to_urls(out)
+        out = _replicate_run(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION, {
+            "prompt": prompt,
+            "image": base_bytes,
+            "num_inference_steps": 28,
+            "guidance_scale": 7,
+            "strength": style_strength
+        })
+        images = out if isinstance(out, list) else [out]
+        images = [u for u in images if u]
         if not images: return _json_error("No image produced (remix)", 500)
         return jsonify({"ok": True, "mode": "remix", "images": images})
 
@@ -442,102 +465,127 @@ def imagine():
         traceback.print_exc()
         return _json_error(f"imagine failed: {_safe_str(e)}", 500)
 
-# ---------- Realtime ----------
-@app.post("/realtime")
-def realtime():
+# ===============================
+# --- Image Remix Suite ROUTES ---
+# ===============================
+@app.post("/remix-image")
+def remix_image():
+    """Face-preserving remix: keep identity, change style/scene/outfit via prompt."""
     try:
+        if not _safe_image_models_ready():
+            return _reject("REPLICATE_API_TOKEN not set on server", 500)
+
         data = request.get_json(force=True, silent=True) or {}
-        query  = (data.get("query")  or "").strip()
-        intent = (data.get("intent") or "").strip().lower()
-        if not query:
-            return jsonify({"summary": "No query.", "cards": []})
+        b64 = (data.get("image_base64") or "").strip()
+        prompt = (data.get("prompt") or "").strip()
+        style_strength = float(data.get("style_strength") or 0.6)
 
-        cards = []; images = []
-        md = f"### Results for **{query}**\n\n{POWERED_BY_LINE}"
+        if not b64:    return _reject("No image provided.")
+        if not prompt: return _reject("Please add a prompt.")
 
-        if intent == "weather":
-            city = query.title()
-            cards = [{
-                "type": "weather",
-                "title": f"Weather — {city}",
-                "subtitle": "Tap sources for live details",
-                "icon": "https://openweathermap.org/img/wn/01d.png",
-                "temp_c": None, "temp_f": None,
-                "feels_like_c": None, "feels_like_f": None,
-                "humidity": None, "wind_kph": None, "wind_mph": None,
-                "hourly": [], "daily": []
-            }] + _weather_cards_links(query)
+        img = _b64_to_pil(b64)
+        img_bytes = _img_to_bytes(img, "PNG")
 
-        elif intent == "time":
-            cards = _time_cards(query)
+        inputs = {
+            "prompt": prompt,
+            "image": img_bytes,
+            "guidance_scale": 7,
+            "num_inference_steps": 28,
+            "strength": style_strength,
+            "seed": None,
+        }
 
-        elif intent == "crypto":
-            cards = _crypto_cards(query)
-
-        elif intent == "images":
-            images = _free_image_urls(query, n=12)
-            cards = [{
-                "type": "images-grid",
-                "title": f"Images — {query}",
-                "images": images
-            },
-            _mk_web_card(f"Google Images — {query}", f"https://www.google.com/search?tbm=isch&q={quote(query)}", "google.com", ctype="images"),
-            _mk_web_card(f"Bing Images — {query}",   f"https://www.bing.com/images/search?q={quote(query)}",     "bing.com",   ctype="images"),
-            _mk_web_card("Unsplash",                  f"https://unsplash.com/s/photos/{quote(query)}",            "unsplash.com", ctype="images"),
-            _mk_web_card("Lexica (AI images)",        f"https://lexica.art/?q={quote(query)}",                    "lexica.art", ctype="images"),
-            ]
-
-        else:
-            cards = _hq_news_cards(query)
-
-        return jsonify({"summary": f"Results for {query}", "markdown": md, "cards": cards, "images": images})
+        out = _replicate_run(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION, inputs)
+        images = out if isinstance(out, list) else [out]
+        images = [u for u in images if u]
+        if not images: return _reject("No image produced. Try a different prompt.")
+        _log_line({"route": "/remix-image", "ok": True})
+        return jsonify({"ok": True, "images": images})
     except Exception as e:
         traceback.print_exc()
-        return _json_error(f"realtime failed: {_safe_str(e)}", 500)
+        _log_line({"route": "/remix-image", "ok": False, "err": _safe_str(e)})
+        return _reject(f"Remix failed: {_safe_str(e)}", 500)
 
-# ---------- Suggestions ----------
-@app.get("/suggest")
-def suggest():
+@app.post("/inpaint-image")
+def inpaint_image():
+    """Mask edit: white = edit, black = keep."""
     try:
-        q = (request.args.get("q") or "").strip()
-        if not q:
-            return jsonify({"suggestions": []})
-        base = [
-            f"google: {q}",
-            f"search: {q} latest news",
-            f"table: Top 5 facts about {q}",
-            f"{q} — pros and cons",
-            f"steps to do {q}",
-            f"youtube: {q}"
-        ]
-        out, seen = [], set()
-        for s in base:
-            if s not in seen:
-                out.append(s); seen.add(s)
-        return jsonify({"suggestions": out[:8]})
+        if not _safe_image_models_ready():
+            return _reject("REPLICATE_API_TOKEN not set on server", 500)
+
+        data = request.get_json(force=True, silent=True) or {}
+        base_b64 = (data.get("image_base64") or "").strip()
+        mask_b64 = (data.get("mask_base64") or "").strip()
+        prompt   = (data.get("prompt") or "").strip()
+        if not base_b64: return _reject("No base image.")
+        if not mask_b64: return _reject("No mask image.")
+        if not prompt:   return _reject("Please add a prompt.")
+
+        base_img = _b64_to_pil(base_b64).convert("RGBA")
+        mask_img = _b64_to_pil(mask_b64).convert("L")
+        if mask_img.size != base_img.size:
+            mask_img = mask_img.resize(base_img.size, Image.LANCZOS)
+
+        base_bytes = _img_to_bytes(base_img, "PNG")
+        mask_bytes = _img_to_bytes(mask_img, "PNG")
+
+        out = _replicate_run(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION, {
+            "image": base_bytes,
+            "mask": mask_bytes,
+            "prompt": prompt,
+            "num_inference_steps": 35,
+            "guidance_scale": 7
+        })
+        images = out if isinstance(out, list) else [out]
+        images = [u for u in images if u]
+        if not images: return _reject("No image produced. Refine the mask or prompt.")
+        _log_line({"route": "/inpaint-image", "ok": True})
+        return jsonify({"ok": True, "images": images})
     except Exception as e:
         traceback.print_exc()
-        return _json_error(f"suggest failed: {_safe_str(e)}", 500)
+        _log_line({"route": "/inpaint-image", "ok": False, "err": _safe_str(e)})
+        return _reject(f"Inpaint failed: {_safe_str(e)}", 500)
 
-# ---------- Search ----------
-@app.post("/search")
-def search():
+@app.post("/bg-swap")
+def bg_swap():
+    """Background swap: remove BG, then compose with new scene."""
     try:
+        if not _safe_image_models_ready():
+            return _reject("REPLICATE_API_TOKEN not set on server", 500)
+
         data = request.get_json(force=True, silent=True) or {}
-        q = (data.get("prompt") or "").strip()
-        if not q:
-            return jsonify({"ok": True, "results": []})
-        results = _hq_news_cards(q)
-        out = [{
-            "title": r["title"],
-            "url": r["url"],
-            "image": r.get("image"),
-            "source": r.get("source"),
-            "snippet": r.get("snippet")
-        } for r in results]
-        return jsonify({"ok": True, "results": out})
+        b64 = (data.get("image_base64") or "").strip()
+        prompt = (data.get("prompt") or "").strip() or "subject on a clean studio background"
+        if not b64: return _reject("No image provided.")
+
+        img = _b64_to_pil(b64)
+        img_bytes = _img_to_bytes(img, "PNG")
+
+        # 1) Remove background (returns a URL PNG with alpha)
+        cutout = _replicate_run(REPLICATE_RMBG_MODEL, REPLICATE_RMBG_VERSION, {"image": img_bytes})
+
+        # 2) Compose into new scene
+        out = _replicate_run(REPLICATE_BGGEN_MODEL, REPLICATE_BGGEN_VERSION, {
+            "prompt": prompt,
+            "image": cutout,          # init image accepted as URL by many SDXL models
+            "strength": 0.65,
+            "num_inference_steps": 28,
+            "guidance_scale": 7
+        })
+        images = out if isinstance(out, list) else [out]
+        images = [u for u in images if u]
+        if not images: return _reject("No image produced. Try another prompt.")
+        _log_line({"route": "/bg-swap", "ok": True})
+        return jsonify({"ok": True, "images": images})
     except Exception as e:
-        return _json_error(f"search failed: {_safe_str(e)}", 500)
+        traceback.print_exc()
+        _log_line({"route": "/bg-swap", "ok": False, "err": _safe_str(e)})
+        return _reject(f"BG swap failed: {_safe_str(e)}", 500)
+
+# ---------- Static ----------
+@app.get("/public/<path:filename>")
+def public_files(filename):
+    return send_from_directory(STATIC_DIR, filename)
 
 # ---------- YouTube ----------
 @app.post("/search-youtube")
@@ -686,160 +734,25 @@ def file_analyze():
         traceback.print_exc()
         return _json_error(f"file-analyze failed: {_safe_str(e)}", 500)
 
-# ---------- Image proxy ----------
-@app.get("/img")
-def img_proxy():
-    u = request.args.get("url", "")
-    p = urlparse(u)
-    if p.scheme not in ("http", "https"):
-        return Response(b"", status=400)
+# ---------- Search ----------
+@app.post("/search")
+def search():
     try:
-        r = requests.get(u, headers={"User-Agent": "Mozilla/5.0", "Referer": ""}, timeout=15)
-        ct = r.headers.get("content-type", "image/jpeg")
-        data = r.content[:5_000_000]
-        resp = Response(data, content_type=ct)
-        resp.headers["Cache-Control"] = "public, max-age=86400"
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        return resp
-    except Exception:
-        return Response(b"", status=502)
-
-# ===============================
-# --- Image Remix Suite ROUTES ---
-# ===============================
-@app.post("/remix-image")
-def remix_image():
-    """
-    Face-preserving remix: keep identity, change style/scene/outfit via prompt.
-    Body (JSON): { image_base64: dataURL, prompt: str, style_strength?: 0..1 }
-    """
-    try:
-        if not _safe_image_models_ready():
-            return _reject("REPLICATE_API_TOKEN not set on server", 500)
-
         data = request.get_json(force=True, silent=True) or {}
-        b64 = (data.get("image_base64") or "").strip()
-        prompt = (data.get("prompt") or "").strip()
-        style_strength = float(data.get("style_strength") or 0.35)
-        style_strength = max(0.05, min(style_strength, 0.6))
-
-        if not b64:    return _reject("No image provided.")
-        if not prompt: return _reject("Please add a prompt.")
-
-        img = _b64_to_pil(b64)
-        img_bytes = _img_to_bytes(img, "PNG")
-
-        out = replicate_client.run(
-            _spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION),
-            input={
-                "prompt": f"keep identity and background identical; {prompt}",
-                "image": img_bytes,           # img2img
-                "strength": style_strength,   # SD3/3.5 uses 'strength'
-                "num_inference_steps": 28,
-                "guidance_scale": 7,
-            }
-        )
-        images = _replicate_to_urls(out)
-        if not images: return _reject("No image produced. Try a different prompt.")
-        _log_line({"route": "/remix-image", "ok": True})
-        return jsonify({"ok": True, "images": images})
+        q = (data.get("prompt") or "").strip()
+        if not q:
+            return jsonify({"ok": True, "results": []})
+        results = _hq_news_cards(q)
+        out = [{
+            "title": r["title"],
+            "url": r["url"],
+            "image": r.get("image"),
+            "source": r.get("source"),
+            "snippet": r.get("snippet")
+        } for r in results]
+        return jsonify({"ok": True, "results": out})
     except Exception as e:
-        traceback.print_exc()
-        _log_line({"route": "/remix-image", "ok": False, "err": _safe_str(e)})
-        return _reject(f"Remix failed: {_safe_str(e)}", 500)
-
-@app.post("/inpaint-image")
-def inpaint_image():
-    """
-    Mask edit: white = edit, black = keep.
-    Body (JSON): { image_base64: dataURL, mask_base64: dataURL, prompt: str }
-    """
-    try:
-        if not _safe_image_models_ready():
-            return _reject("REPLICATE_API_TOKEN not set on server", 500)
-
-        data = request.get_json(force=True, silent=True) or {}
-        base_b64 = (data.get("image_base64") or "").strip()
-        mask_b64 = (data.get("mask_base64") or "").strip()
-        prompt   = (data.get("prompt") or "").strip()
-        if not base_b64: return _reject("No base image.")
-        if not mask_b64: return _reject("No mask image.")
-        if not prompt:   return _reject("Please add a prompt.")
-
-        base_img = _b64_to_pil(base_b64).convert("RGBA")
-        mask_img = _b64_to_pil(mask_b64).convert("L")
-        if mask_img.size != base_img.size:
-            mask_img = mask_img.resize(base_img.size, Image.LANCZOS)
-
-        base_bytes = _img_to_bytes(base_img, "PNG")
-        mask_bytes = _img_to_bytes(mask_img, "PNG")
-
-        out = replicate_client.run(
-            _spec(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION),
-            input={
-                "image": base_bytes,
-                "mask": mask_bytes,
-                "prompt": prompt,
-                "num_inference_steps": 35,
-                "guidance_scale": 7
-            }
-        )
-        images = _replicate_to_urls(out)
-        if not images: return _reject("No image produced. Refine the mask or prompt.")
-        _log_line({"route": "/inpaint-image", "ok": True})
-        return jsonify({"ok": True, "images": images})
-    except Exception as e:
-        traceback.print_exc()
-        _log_line({"route": "/inpaint-image", "ok": False, "err": _safe_str(e)})
-        return _reject(f"Inpaint failed: {_safe_str(e)}", 500)
-
-@app.post("/bg-swap")
-def bg_swap():
-    """
-    Background swap: remove BG, then compose with new scene.
-    Body (JSON): { image_base64: dataURL, prompt?: str }
-    """
-    try:
-        if not _safe_image_models_ready():
-            return _reject("REPLICATE_API_TOKEN not set on server", 500)
-
-        data = request.get_json(force=True, silent=True) or {}
-        b64 = (data.get("image_base64") or "").strip()
-        prompt = (data.get("prompt") or "").strip() or "subject on a clean studio background"
-        if not b64: return _reject("No image provided.")
-
-        img = _b64_to_pil(b64)
-        img_bytes = _img_to_bytes(img, "PNG")
-
-        # 1) Remove background (returns a URL/PNG)
-        cutout = replicate_client.run(_spec(REPLICATE_RMBG_MODEL, REPLICATE_RMBG_VERSION), input={"image": img_bytes})
-        cut_urls = _replicate_to_urls(cutout)
-        cut_src = cut_urls[0] if cut_urls else str(cutout)
-
-        # 2) Compose into new scene
-        out = replicate_client.run(
-            _spec(REPLICATE_BGGEN_MODEL, REPLICATE_BGGEN_VERSION),
-            input={
-                "prompt": prompt,
-                "image": cut_src,         # most models accept URL here
-                "strength": 0.65,
-                "num_inference_steps": 28,
-                "guidance_scale": 7
-            }
-        )
-        images = _replicate_to_urls(out)
-        if not images: return _reject("No image produced. Try another prompt.")
-        _log_line({"route": "/bg-swap", "ok": True})
-        return jsonify({"ok": True, "images": images})
-    except Exception as e:
-        traceback.print_exc()
-        _log_line({"route": "/bg-swap", "ok": False, "err": _safe_str(e)})
-        return _reject(f"BG swap failed: {_safe_str(e)}", 500)
-
-# ---------- Static ----------
-@app.get("/public/<path:filename>")
-def public_files(filename):
-    return send_from_directory(STATIC_DIR, filename)
+        return _json_error(f"search failed: {_safe_str(e)}", 500)
 
 # ================
 # ---- Main ------
