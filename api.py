@@ -1,3 +1,4 @@
+import os
 import base64
 import io
 from flask import Flask, request, jsonify
