@@ -1,166 +1,141 @@
-import os, io, json, uuid, base64, mimetypes, traceback, time
-from datetime import datetime
-from urllib.parse import urljoin, urlparse, quote
+import os
+import io
+import base64
+from typing import List, Union
 
-import requests
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from PIL import Image
+
 import replicate
 
-from flask import Flask, request, jsonify, send_from_directory, Response
-from flask_cors import CORS
 
-# ========================
-# -------- ENV -----------
-# ========================
-OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
-OPENAI_CHAT_MODEL   = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+# ========== ENV / CONFIG ==========
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
 
-LOG_FILE            = os.getenv("LOG_FILE", "user_logs.jsonl")
-STATIC_DIR          = os.getenv("STATIC_DIR", "public")
-UPLOADS_DIR         = os.path.join(STATIC_DIR, "uploads")
-ALLOWED_ORIGINS     = os.getenv("ALLOWED_ORIGINS", "*")
-PUBLIC_BASE_URL     = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
-
-# Branding
-CREATOR_NAME        = os.getenv("CREATOR_NAME", "Dhruv Patel")
-ASSISTANT_NAME      = os.getenv("ASSISTANT_NAME", "Droxion")
-POWERED_BY_LINE     = os.getenv("POWERED_BY_LINE", "— Powered by Droxion")
-
-# --- Image Remix Suite (Replicate) ---
-REPLICATE_API_TOKEN     = os.getenv("REPLICATE_API_TOKEN", "")
-
-# You may provide owner/model in *_MODEL and, optionally, a VERSION in the *_VERSION envs.
-# If VERSION is set, we'll call "owner/model:VERSION"; otherwise just "owner/model".
-REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL",   "stability-ai/sdxl")
+# You can provide either just "owner/model" or "owner/model:version".
+# Leave VERSION empty if you want Replicate to use the model's default/latest.
+REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL",   "stability-ai/stable-diffusion-3.5-large")
 REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")
 
 REPLICATE_INPAINT_MODEL   = os.getenv("REPLICATE_INPAINT_MODEL",   "lucataco/sdxl-inpainting")
 REPLICATE_INPAINT_VERSION = os.getenv("REPLICATE_INPAINT_VERSION", "")
 
-REPLICATE_RMBG_MODEL    = os.getenv("REPLICATE_RMBG_MODEL",    "jianfch/stable-diffusion-rembg")
-REPLICATE_RMBG_VERSION  = os.getenv("REPLICATE_RMBG_VERSION",  "")
+# Background removal (produces transparent PNG)
+REPLICATE_RMBG_MODEL   = os.getenv("REPLICATE_RMBG_MODEL",   "jianfch/stable-diffusion-rembg")
+REPLICATE_RMBG_VERSION = os.getenv("REPLICATE_RMBG_VERSION", "")
 
+# Simple background generator (optional)
 REPLICATE_BGGEN_MODEL   = os.getenv("REPLICATE_BGGEN_MODEL",   "stability-ai/sdxl")
 REPLICATE_BGGEN_VERSION = os.getenv("REPLICATE_BGGEN_VERSION", "")
 
 replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN) if REPLICATE_API_TOKEN else None
 
-os.makedirs(STATIC_DIR, exist_ok=True)
-os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/public")
-CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=False)
+# ========== FLASK APP ==========
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=False)
 
-# ========================
-# ------ Helpers ---------
-# ========================
 
-def _json_error(msg: str, status: int = 400):
-    return jsonify({"ok": False, "error": msg}), status
-
-def _safe_str(x) -> str:
-    try:
-        return str(x)
-    except Exception:
-        return "<unprintable>"
-
-def _log_line(payload: dict):
-    payload = dict(payload or {})
-    payload["ts"] = datetime.utcnow().isoformat()
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-def _abs_url(u: str) -> str:
-    if not u: return u
-    if u.startswith("http://") or u.startswith("https://"): return u
-    base = PUBLIC_BASE_URL or (request.host_url.rstrip("/") if request else "")
-    return urljoin(base + "/", u.lstrip("/"))
-
-# ---- Image helpers ----
-def _b64_to_pil(b64_str: str) -> Image.Image:
-    data = (b64_str or "").split(",")[-1]
-    return Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
-
-def _img_to_bytes(img: Image.Image, mode="PNG") -> io.BytesIO:
-    buf = io.BytesIO()
-    img.save(buf, format=mode)
-    buf.seek(0)
-    return buf
-
-def _safe_image_models_ready() -> bool:
-    return bool(replicate_client)
+# ========== HELPERS ==========
 
 def _spec(model: str, version: str = "") -> str:
-    """Return 'owner/model:version' only if a version was provided."""
-    model = (model or "").strip()
-    version = (version or "").strip()
+    """
+    Return 'owner/model:version' only when version provided, otherwise 'owner/model'.
+    Avoids 404/422 'invalid version' when you haven't set a version yet.
+    """
     if not model:
-        return model
+        return ""
+    model = model.strip()
+    version = (version or "").strip()
     return f"{model}:{version}" if version else model
 
-def _to_urls(rep_out):
+
+def _b64_to_pil(b64_str: str) -> Image.Image:
     """
-    Replicate responses can be: string URL, FileOutput, or list of those.
-    Always return a list of string URLs so Flask can JSON-encode them.
+    Accepts a data URL (data:image/...;base64,...) or raw base64 string.
+    Returns a PIL Image (RGBA where possible).
     """
-    if rep_out is None:
-        return []
-    items = rep_out if isinstance(rep_out, list) else [rep_out]
-    urls = []
-    for x in items:
-        if not x:
-            continue
-        try:
-            s = str(x)  # FileOutput -> "https://..."
-        except Exception:
-            continue
-        if s:
-            urls.append(s)
-    # de-dup while preserving order
-    seen = set()
-    uniq = []
-    for u in urls:
-        if u not in seen:
-            uniq.append(u); seen.add(u)
-    return uniq
+    if not b64_str:
+        raise ValueError("Missing base64 image.")
 
-# ========================
-# ------- Minimal Chat ----
-# ========================
-def _openai_chat(prompt: str) -> str:
-    if not OPENAI_API_KEY:
-        return prompt
-    try:
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-        sys = (f"You are {ASSISTANT_NAME}, created by {CREATOR_NAME}. "
-               f"Be concise. End answers with '{POWERED_BY_LINE}'.")
-        body = {
-            "model": OPENAI_CHAT_MODEL,
-            "messages": [
-                {"role": "system", "content": sys},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.5
-        }
-        r = requests.post(url, headers=headers, json=body, timeout=60); r.raise_for_status()
-        j = r.json()
-        return (j["choices"][0]["message"]["content"] or "").strip()
-    except Exception as e:
-        _log_line({"openai_error": _safe_str(e)})
-        return f"{prompt}\n\n{POWERED_BY_LINE}"
+    # strip data URL prefix if present
+    if "," in b64_str and b64_str.lower().startswith("data:"):
+        b64_str = b64_str.split(",", 1)[1]
 
-# ========================
-# -------- Routes --------
-# ========================
+    raw = base64.b64decode(b64_str)
+    img = Image.open(io.BytesIO(raw))
+    # Keep alpha if present; otherwise convert to RGB
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+    return img
 
-@app.get("/")
+
+def _img_to_data_url(img: Image.Image, fmt: str = "PNG") -> str:
+    buf = io.BytesIO()
+    img.save(buf, format=fmt)
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode("utf-8")
+    mime = "image/png" if fmt.upper() == "PNG" else "image/jpeg"
+    return f"data:{mime};base64,{b64}"
+
+
+def _to_url_list(output: Union[str, dict, list]) -> List[str]:
+    """
+    Replicate output can be:
+      - a URL string
+      - a list of URL strings
+      - a list of File objects
+      - a dict with 'image'/'images'
+    Normalize to list[str] of HTTPS URLs (or data URLs).
+    """
+    urls: List[str] = []
+
+    def coerce_one(x):
+        if x is None:
+            return
+        # File object (replicate.files.File or FileOutput)
+        # Most have either .url or .path that is already an https URL.
+        url = None
+        if hasattr(x, "url") and isinstance(getattr(x, "url"), str):
+            url = x.url
+        elif hasattr(x, "path") and isinstance(getattr(x, "path"), str):
+            url = x.path
+        elif isinstance(x, str):
+            url = x
+        # Some models return dicts like {"image": "https://..."} or {"images": [...]}
+        elif isinstance(x, dict):
+            if "image" in x and isinstance(x["image"], str):
+                url = x["image"]
+            elif "images" in x and isinstance(x["images"], list):
+                for y in x["images"]:
+                    coerce_one(y)
+                return
+        if url:
+            urls.append(url)
+
+    if isinstance(output, list):
+        for item in output:
+            coerce_one(item)
+    else:
+        coerce_one(output)
+
+    return urls
+
+
+def _require_models_ready():
+    if not replicate_client:
+        raise RuntimeError("Missing REPLICATE_API_TOKEN.")
+    return True
+
+
+# ========== ROUTES ==========
+
+@app.route("/", methods=["GET"])
 def root():
-    # quick diagnostics about model envs
-    diag = {
+    """Tiny health + env echo (safe)."""
+    return jsonify({
+        "ok": True,
         "REPLICATE_API_TOKEN_set": bool(REPLICATE_API_TOKEN),
         "remix_model_env": REPLICATE_REMIX_MODEL,
         "remix_version_env": REPLICATE_REMIX_VERSION,
@@ -168,232 +143,159 @@ def root():
         "inpaint_version_env": REPLICATE_INPAINT_VERSION,
         "rmbg_model_env": REPLICATE_RMBG_MODEL,
         "bggen_model_env": REPLICATE_BGGEN_MODEL,
-    }
-    return jsonify({"ok": True, "service": f"{ASSISTANT_NAME} API", "diag": diag, "time": datetime.utcnow().isoformat()})
+    })
 
-@app.post("/chat")
-def chat():
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        prompt = (data.get("prompt") or "").strip()
-        if not prompt:
-            return _json_error("Missing 'prompt'")
-        reply = _openai_chat(prompt)
-        return jsonify({"ok": True, "reply": reply})
-    except Exception as e:
-        traceback.print_exc()
-        return _json_error(f"chat failed: {_safe_str(e)}", 500)
 
-# ---------- Unified Image Endpoint ----------
-@app.post("/imagine")
-def imagine():
-    """
-    Text → image, image → image (remix), or inpaint (image + mask).
-    Body JSON:
-      prompt (required)
-      image_base64 (optional)
-      mask_base64 (optional)  # if present => inpaint
-      style_strength (optional float 0..1, remix only)
-    """
-    try:
-        if not _safe_image_models_ready():
-            return _json_error("REPLICATE_API_TOKEN not set", 500)
-
-        data = request.get_json(force=True, silent=True) or {}
-        prompt = (data.get("prompt") or "").strip()
-        if not prompt:
-            return _json_error("Missing 'prompt'")
-
-        img_b64  = (data.get("image_base64") or "").strip()
-        mask_b64 = (data.get("mask_base64") or "").strip()
-        style_strength = float(data.get("style_strength") or 0.6)
-
-        # CASE A: text-only => txt2img (use BGGEN model for generic generation)
-        if not img_b64:
-            out = replicate_client.run(
-                _spec(REPLICATE_BGGEN_MODEL, REPLICATE_BGGEN_VERSION),
-                input={"prompt": prompt, "num_inference_steps": 28, "guidance_scale": 7}
-            )
-            images = _to_urls(out)
-            if not images:
-                return _json_error("No image produced (txt2img)", 500)
-            return jsonify({"ok": True, "mode": "txt2img", "images": images})
-
-        base_img = _b64_to_pil(img_b64)
-        base_bytes = _img_to_bytes(base_img, "PNG")
-
-        # CASE B: image + mask => inpaint
-        if mask_b64:
-            mask_img = _b64_to_pil(mask_b64).convert("L")
-            if mask_img.size != base_img.size:
-                mask_img = mask_img.resize(base_img.size, Image.LANCZOS)
-            mask_bytes = _img_to_bytes(mask_img, "PNG")
-
-            out = replicate_client.run(
-                _spec(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION),
-                input={
-                    "image": base_bytes,
-                    "mask": mask_bytes,
-                    "prompt": prompt,
-                    "num_inference_steps": 35,
-                    "guidance_scale": 7
-                }
-            )
-            images = _to_urls(out)
-            if not images:
-                return _json_error("No image produced (inpaint)", 500)
-            return jsonify({"ok": True, "mode": "inpaint", "images": images})
-
-        # CASE C: image only + prompt => remix (img2img)
-        out = replicate_client.run(
-            _spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION),
-            input={
-                "prompt": prompt,
-                "image": base_bytes,
-                "num_inference_steps": 28,
-                "guidance_scale": 7,
-                # some SDXL variants use "strength" for img2img remixing
-                "strength": style_strength
-            }
-        )
-        images = _to_urls(out)
-        if not images:
-            return _json_error("No image produced (remix)", 500)
-        return jsonify({"ok": True, "mode": "remix", "images": images})
-
-    except Exception as e:
-        traceback.print_exc()
-        return _json_error(f"imagine failed: {_safe_str(e)}", 500)
-
-# --- Dedicated “Remix” (face/style-lock-ish) ---
-@app.post("/remix-image")
+@app.route("/remix-image", methods=["POST"])
 def remix_image():
+    """
+    Image-to-image / “remix”.
+    Body: { image_base64, prompt, style_strength? (0..1) }
+    """
     try:
-        if not _safe_image_models_ready():
-            return _json_error("REPLICATE_API_TOKEN not set", 500)
+        _require_models_ready()
 
-        data = request.get_json(force=True, silent=True) or {}
-        b64 = (data.get("image_base64") or "").strip()
-        prompt = (data.get("prompt") or "").strip()
-        style_strength = float(data.get("style_strength") or 0.6)
-        if not b64:    return _json_error("No image provided.")
-        if not prompt: return _json_error("Please add a prompt.")
+        data = request.get_json(force=True, silent=False)
+        image_b64 = (data or {}).get("image_base64", "")
+        prompt = (data or {}).get("prompt", "") or ""
+        strength = float((data or {}).get("style_strength", 0.6))  # 0..1
 
-        img = _b64_to_pil(b64)
-        img_bytes = _img_to_bytes(img, "PNG")
+        # For SD3.5 the param is 'image' + 'prompt' + 'strength'
+        # We can send the source image as a data URL; Replicate accepts it.
+        model_id = _spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION)
+        if not model_id:
+            raise RuntimeError("Remix model not configured.")
 
-        out = replicate_client.run(
-            _spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION),
+        prediction = replicate_client.predictions.create(
+            model=model_id,
             input={
+                "image": image_b64,
                 "prompt": prompt,
-                "image": img_bytes,
-                "guidance_scale": 7,
-                "num_inference_steps": 28,
-                "strength": style_strength
-            }
+                # SDXL img2img expects 'strength'; leave if model ignores
+                "strength": max(0.0, min(1.0, strength)),
+            },
         )
-        images = _to_urls(out)
-        if not images:
-            return _json_error("No image produced. Try a different prompt.")
-        return jsonify({"ok": True, "images": images})
-    except Exception as e:
-        traceback.print_exc()
-        return _json_error(f"Remix failed: {_safe_str(e)}", 500)
 
-# --- Dedicated “Inpaint” (mask editing) ---
-@app.post("/inpaint-image")
+        # Wait for completion
+        prediction.wait()
+        if prediction.status != "succeeded":
+            raise RuntimeError(f"Remix failed: {prediction.error or prediction.status}")
+
+        images = _to_url_list(prediction.output)
+        if not images:
+            raise RuntimeError("No images returned from remix.")
+
+        return jsonify({"ok": True, "images": images})
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/inpaint-image", methods=["POST"])
 def inpaint_image():
+    """
+    Inpainting with mask.
+    Body: { image_base64, mask_base64, prompt }
+    - White = change; Black = keep
+    """
     try:
-        if not _safe_image_models_ready():
-            return _json_error("REPLICATE_API_TOKEN not set", 500)
+        _require_models_ready()
 
-        data = request.get_json(force=True, silent=True) or {}
-        base_b64 = (data.get("image_base64") or "").strip()
-        mask_b64 = (data.get("mask_base64") or "").strip()
-        prompt   = (data.get("prompt") or "").strip()
-        if not base_b64: return _json_error("No base image.")
-        if not mask_b64: return _json_error("No mask image.")
-        if not prompt:   return _json_error("Please add a prompt.")
+        data = request.get_json(force=True, silent=False)
+        image_b64 = (data or {}).get("image_base64", "")
+        mask_b64 = (data or {}).get("mask_base64", "")
+        prompt = (data or {}).get("prompt", "") or ""
 
-        base_img = _b64_to_pil(base_b64).convert("RGBA")
-        mask_img = _b64_to_pil(mask_b64).convert("L")
-        if mask_img.size != base_img.size:
-            mask_img = mask_img.resize(base_img.size, Image.LANCZOS)
+        if not image_b64:
+            raise ValueError("image_base64 is required.")
+        if not mask_b64:
+            raise ValueError("mask_base64 is required.")
 
-        base_bytes = _img_to_bytes(base_img, "PNG")
-        mask_bytes = _img_to_bytes(mask_img, "PNG")
+        model_id = _spec(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION)
+        if not model_id:
+            raise RuntimeError("Inpaint model not configured.")
 
-        out = replicate_client.run(
-            _spec(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION),
+        # Many SDXL inpaint forks accept "image", "mask", "prompt"
+        prediction = replicate_client.predictions.create(
+            model=model_id,
             input={
-                "image": base_bytes,
-                "mask": mask_bytes,
+                "image": image_b64,
+                "mask": mask_b64,
                 "prompt": prompt,
-                "num_inference_steps": 35,
-                "guidance_scale": 7
-            }
+            },
         )
-        images = _to_urls(out)
-        if not images:
-            return _json_error("No image produced. Refine the mask or prompt.")
-        return jsonify({"ok": True, "images": images})
-    except Exception as e:
-        traceback.print_exc()
-        return _json_error(f"Inpaint failed: {_safe_str(e)}", 500)
 
-# --- Background swap (remove BG then generate new scene) ---
-@app.post("/bg-swap")
+        prediction.wait()
+        if prediction.status != "succeeded":
+            raise RuntimeError(f"Inpaint failed: {prediction.error or prediction.status}")
+
+        images = _to_url_list(prediction.output)
+        if not images:
+            raise RuntimeError("No images returned from inpaint.")
+
+        return jsonify({"ok": True, "images": images})
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/bg-swap", methods=["POST"])
 def bg_swap():
+    """
+    Very simple background workflow:
+      1) Remove background (transparent PNG) using rembg model.
+      2) (Optional) Generate a new background image with BGGEN model using 'prompt'.
+    Returns whatever the models output as URLs.
+    Body: { image_base64, prompt? }
+    """
     try:
-        if not _safe_image_models_ready():
-            return _json_error("REPLICATE_API_TOKEN not set", 500)
+        _require_models_ready()
 
-        data = request.get_json(force=True, silent=True) or {}
-        b64 = (data.get("image_base64") or "").strip()
-        prompt = (data.get("prompt") or "").strip() or "subject on a clean studio background"
-        if not b64:
-            return _json_error("No image provided.")
+        data = request.get_json(force=True, silent=False)
+        image_b64 = (data or {}).get("image_base64", "")
+        prompt = (data or {}).get("prompt", "") or ""
 
-        img = _b64_to_pil(b64)
-        img_bytes = _img_to_bytes(img, "PNG")
+        if not image_b64:
+            raise ValueError("image_base64 is required.")
 
-        # 1) Remove background (most RMBG models accept a file-like image)
-        cutout = replicate_client.run(
-            _spec(REPLICATE_RMBG_MODEL, REPLICATE_RMBG_VERSION),
-            input={"image": img_bytes}
+        # Step 1: remove background
+        rmbg_id = _spec(REPLICATE_RMBG_MODEL, REPLICATE_RMBG_VERSION)
+        if not rmbg_id:
+            raise RuntimeError("RMBG model not configured.")
+
+        cutout_pred = replicate_client.predictions.create(
+            model=rmbg_id,
+            input={"image": image_b64},
         )
-        cut_urls = _to_urls(cutout)
-        if not cut_urls:
-            return _json_error("Background removal failed.")
-        cut_url = cut_urls[0]
+        cutout_pred.wait()
+        if cutout_pred.status != "succeeded":
+            raise RuntimeError(f"RMBG failed: {cutout_pred.error or cutout_pred.status}")
 
-        # 2) Compose into new scene
-        out = replicate_client.run(
-            _spec(REPLICATE_BGGEN_MODEL, REPLICATE_BGGEN_VERSION),
-            input={
-                "prompt": prompt,
-                "image": cut_url,          # URL from step 1
-                "strength": 0.65,
-                "num_inference_steps": 28,
-                "guidance_scale": 7
-            }
-        )
-        images = _to_urls(out)
+        cutout_urls = _to_url_list(cutout_pred.output)
+        images = list(cutout_urls)
+
+        # Step 2: optional background generation
+        if prompt.strip():
+            bg_id = _spec(REPLICATE_BGGEN_MODEL, REPLICATE_BGGEN_VERSION)
+            if bg_id:
+                bg_pred = replicate_client.predictions.create(
+                    model=bg_id,
+                    input={"prompt": prompt},
+                )
+                bg_pred.wait()
+                if bg_pred.status == "succeeded":
+                    images.extend(_to_url_list(bg_pred.output))
+
         if not images:
-            return _json_error("No image produced. Try another prompt.")
+            raise RuntimeError("No images returned from background workflow.")
+
         return jsonify({"ok": True, "images": images})
+
     except Exception as e:
-        traceback.print_exc()
-        return _json_error(f"BG swap failed: {_safe_str(e)}", 500)
+        return jsonify({"ok": False, "error": str(e)}), 400
 
-# ---------- Static ----------
-@app.get("/public/<path:filename>")
-def public_files(filename):
-    return send_from_directory(STATIC_DIR, filename)
 
-# ================
-# ---- Main ------
-# ================
+# ========== DEV SERVER ==========
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
