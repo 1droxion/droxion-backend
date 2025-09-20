@@ -6,6 +6,8 @@ moviepy
 imageio-ffmpeg
 numpy
 openai>=1.0.0
+anthropic
+google-generativeai
 pexels_api
 Pillow
 python-dateutil
