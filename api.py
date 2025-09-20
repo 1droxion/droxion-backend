@@ -38,19 +38,19 @@ MAX_TTS_CHARS       = int(os.getenv("MAX_TTS_CHARS", "900"))     # safety trim f
 # --- Image Remix Suite (Replicate) ---
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
 
-# You can provide either "owner/model" OR "owner/model:version". If you give only the model,
-# we'll append the VERSION env var when available.
-# Known-good default for INPAINT uses explicit version to avoid 422 "invalid version".
-# --- Replicate Models & Versions (explicit pinning) ---
-# Use "owner/model" only (no :latest). Version hashes are appended automatically if present.
+# IMPORTANT: never put :latest in these; version gets appended below if provided.
+# Remix (img2img). SD3.5 Large supports img2img reliably.
+REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL", "stability-ai/stable-diffusion-3.5-large")
+REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")  # optional but recommended
 
-REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL", "stability-ai/sdxl")  # txt2img & img2img
-REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")  # optional but recommended for stability
-
-# Known-good default for INPAINT uses explicit version to avoid 422 errors.
+# Inpaint (mask editing) — pinned to a known-good public version to avoid 422s.
 REPLICATE_INPAINT_MODEL   = os.getenv("REPLICATE_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
-REPLICATE_INPAINT_VERSION = os.getenv("REPLICATE_INPAINT_VERSION", "8820991880abea5f1a57722e6ca1625117e39312")
+REPLICATE_INPAINT_VERSION = os.getenv(
+    "REPLICATE_INPAINT_VERSION",
+    "4c57606c6c1f7483f8af9e90c2bc88a0154b390b52e7e0c1b0cb8d8d8c488c45"
+)
 
+# Remove BG and background generator
 REPLICATE_RMBG_MODEL   = os.getenv("REPLICATE_RMBG_MODEL", "jianfch/stable-diffusion-rembg")
 REPLICATE_RMBG_VERSION = os.getenv("REPLICATE_RMBG_VERSION", "")  # optional
 
@@ -62,7 +62,7 @@ replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN) if REPLICATE_
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/public")
+app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=False)
 
 # ========================
@@ -175,24 +175,22 @@ def _openai_vision(prompt: str, img_bytes: bytes, mime: str) -> str:
 # ---- Image helpers ----
 def _b64_to_pil(b64_str: str) -> Image.Image:
     data = (b64_str or "").split(",")[-1]
-    return Image.open(io.BytesIO(base64.b64decode(data)))
+    return Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
 
 def _img_to_bytes(img: Image.Image, mode="PNG") -> io.BytesIO:
     buf = io.BytesIO(); img.save(buf, format=mode); buf.seek(0); return buf
 
 def _safe_image_models_ready() -> bool:
     return bool(replicate_client)
+
 def _replicate_to_urls(out):
     """
     Normalize Replicate responses into a list of URL strings.
     Handles lists (FileOutput/str), dicts with 'images', and single objects.
     """
     try:
-        # List response
         if isinstance(out, list):
             return [str(x) for x in out if x]
-
-        # Dict response (some models return {"images": [...]}, or nested)
         if isinstance(out, dict):
             if "images" in out and isinstance(out["images"], list):
                 return [str(x) for x in out["images"] if x]
@@ -204,8 +202,6 @@ def _replicate_to_urls(out):
                     if isinstance(v, list):
                         return [str(x) for x in v if x]
                     return [str(v)]
-
-        # Fallback: single object → string
         s = str(out)
         return [s] if s else []
     except Exception:
@@ -215,56 +211,6 @@ def _spec(model: str, version: str = "") -> str:
     """Return 'owner/model:version' if version provided and ':' not already in model."""
     if ":" in (model or ""): return model
     return f"{model}:{version}" if version else model
-
-# ========================
-# ---- Source builders ---
-# ========================
-def _hq_news_cards(q: str):
-    e = quote(q)
-    return [
-        _mk_web_card(f"Forbes — {q}",               f"https://www.forbes.com/search/?q={e}",          "forbes.com",   ctype="news"),
-        _mk_web_card(f"Bloomberg — {q}",            f"https://www.bloomberg.com/search?query={e}",    "bloomberg.com",ctype="news"),
-        _mk_web_card(f"Reuters — {q}",              f"https://www.reuters.com/site-search/?query={e}","reuters.com",  ctype="news"),
-        _mk_web_card(f"CNBC — {q}",                 f"https://www.cnbc.com/search/?query={e}",        "cnbc.com",     ctype="news"),
-        _mk_web_card(f"Google News — {q}",          f"https://news.google.com/search?q={e}",          "news.google.com",ctype="news"),
-        _mk_web_card(f"Wikipedia — {q}",            f"https://en.wikipedia.org/wiki/{quote(q.replace(' ','_'))}", "wikipedia.org", ctype="wiki"),
-        _mk_web_card(f"Google — {q}",               f"https://www.google.com/search?q={e}",           "google.com"),
-    ]
-
-def _crypto_cards(q: str):
-    e = q.lower()
-    sym = "bitcoin" if ("bitcoin" in e or "btc" in e) else ("ethereum" if ("ethereum" in e or "eth" in e) else q)
-    s = quote(sym)
-    return [
-        _mk_web_card(f"CoinMarketCap — {sym}", f"https://coinmarketcap.com/currencies/{s}/", "coinmarketcap.com", ctype="crypto"),
-        _mk_web_card(f"CoinGecko — {sym}",     f"https://www.coingecko.com/en/coins/{s}",   "coingecko.com",     ctype="crypto"),
-        _mk_web_card(f"CoinDesk — {q}",        f"https://www.coindesk.com/search/{quote(q)}","coindesk.com",     ctype="news"),
-        _mk_web_card(f"Cointelegraph — {q}",   f"https://cointelegraph.com/search?query={quote(q)}","cointelegraph.com",ctype="news"),
-    ]
-
-def _weather_cards_links(city: str):
-    e = quote(city)
-    return [
-        _mk_web_card(f"Google Weather — {city.title()}", f"https://www.google.com/search?q={e}+weather","google.com",ctype="weather"),
-        _mk_web_card(f"Weather.com — {city.title()}",    f"https://weather.com/search/enhancedlocalsearch?where={e}","weather.com", ctype="weather"),
-        _mk_web_card(f"AccuWeather — {city.title()}",    f"https://www.accuweather.com/en/search-locations?query={e}","accuweather.com",ctype="weather"),
-    ]
-
-def _time_cards(place: str):
-    p = place.strip() or "London"; e = quote(p)
-    return [
-        _mk_web_card(f"Current time in {p.title()}", f"https://www.google.com/search?q=time+in+{e}", "google.com", ctype="time"),
-        _mk_web_card(f"Time.is — {p.title()}",       f"https://time.is/{e}",                        "time.is",    ctype="time"),
-    ]
-
-def _free_image_urls(q: str, n=12):
-    qs   = quote(q or "wallpaper")
-    rnd  = uuid.uuid4().hex[:8]
-    out  = []
-    for i in range(min(4, n)): out.append(f"https://picsum.photos/seed/{rnd}-{i}/900/600.jpg")
-    for i in range(min(4, n - len(out))): out.append(f"https://loremflickr.com/900/600/{qs}?lock={i}")
-    for i in range(min(6, n - len(out))): out.append(f"https://source.unsplash.com/900x600/?{qs}&sig={i}&_b={rnd}")
-    return out[:n]
 
 # ========================
 # ------- Weather --------
@@ -409,7 +355,7 @@ def imagine():
       - style_strength (optional float 0..1, remix only)
     Behavior:
       - text only => txt2img (SDXL)
-      - image only + prompt => remix (img2img, SDXL)
+      - image only + prompt => remix (img2img, SD3.5 Large)
       - image + mask + prompt => inpaint (Stable Diffusion Inpainting)
     """
     try:
@@ -435,16 +381,15 @@ def imagine():
                     "guidance_scale": 7
                 }
             )
-            images = out if isinstance(out, list) else [out]
-            images = [u for u in images if u]
+            images = _replicate_to_urls(out)
             if not images: return _json_error("No image produced (txt2img)", 500)
             return jsonify({"ok": True, "mode": "txt2img", "images": images})
 
         # --- build base image bytes
-        base_img = _b64_to_pil(img_b64).convert("RGBA")
+        base_img = _b64_to_pil(img_b64)
         base_bytes = _img_to_bytes(base_img, "PNG")
 
-        # --- CASE B: image + mask => inpaint  (explicit version to avoid 422)
+        # --- CASE B: image + mask => inpaint
         if mask_b64:
             mask_img = _b64_to_pil(mask_b64).convert("L")
             if mask_img.size != base_img.size:
@@ -461,8 +406,7 @@ def imagine():
                     "guidance_scale": 7
                 }
             )
-            images = out if isinstance(out, list) else [out]
-            images = [u for u in images if u]
+            images = _replicate_to_urls(out)
             if not images: return _json_error("No image produced (inpaint)", 500)
             return jsonify({"ok": True, "mode": "inpaint", "images": images})
 
@@ -472,13 +416,12 @@ def imagine():
             input={
                 "prompt": prompt,
                 "image": base_bytes,
+                "strength": style_strength,     # SD3.5 uses 'strength'
                 "num_inference_steps": 28,
                 "guidance_scale": 7,
-                "strength": style_strength  # many SDXL builds use "strength"
             }
         )
-        images = out if isinstance(out, list) else [out]
-        images = [u for u in images if u]
+        images = _replicate_to_urls(out)
         if not images: return _json_error("No image produced (remix)", 500)
         return jsonify({"ok": True, "mode": "remix", "images": images})
 
@@ -746,7 +689,7 @@ def img_proxy():
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp
     except Exception:
-        return Response(b="", status=502)
+        return Response(b"", status=502)
 
 # ===============================
 # --- Image Remix Suite ROUTES ---
@@ -769,22 +712,20 @@ def remix_image():
         if not b64:    return _reject("No image provided.")
         if not prompt: return _reject("Please add a prompt.")
 
-        img = _b64_to_pil(b64).convert("RGBA")
+        img = _b64_to_pil(b64)
         img_bytes = _img_to_bytes(img, "PNG")
 
-        inputs = {
-            "prompt": prompt,
-            "image": img_bytes,            # file-like object
-            "guidance_scale": 7,
-            "num_inference_steps": 28,
-            "strength": style_strength,
-            "seed": None,
-        }
-        inputs = {k:v for k,v in inputs.items() if v is not None}
-
-        out = replicate_client.run(_spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION), input=inputs)
-        images = out if isinstance(out, list) else [out]
-        images = [u for u in images if u]
+        out = replicate_client.run(
+            _spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION),
+            input={
+                "prompt": prompt,
+                "image": img_bytes,           # img2img
+                "strength": style_strength,   # SD3.5 uses 'strength'
+                "num_inference_steps": 28,
+                "guidance_scale": 7,
+            }
+        )
+        images = _replicate_to_urls(out)
         if not images: return _reject("No image produced. Try a different prompt.")
         _log_line({"route": "/remix-image", "ok": True})
         return jsonify({"ok": True, "images": images})
@@ -819,15 +760,17 @@ def inpaint_image():
         base_bytes = _img_to_bytes(base_img, "PNG")
         mask_bytes = _img_to_bytes(mask_img, "PNG")
 
-        out = replicate_client.run(_spec(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION), input={
-            "image": base_bytes,
-            "mask": mask_bytes,
-            "prompt": prompt,
-            "num_inference_steps": 35,
-            "guidance_scale": 7
-        })
-        images = out if isinstance(out, list) else [out]
-        images = [u for u in images if u]
+        out = replicate_client.run(
+            _spec(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION),
+            input={
+                "image": base_bytes,
+                "mask": mask_bytes,
+                "prompt": prompt,
+                "num_inference_steps": 35,
+                "guidance_scale": 7
+            }
+        )
+        images = _replicate_to_urls(out)
         if not images: return _reject("No image produced. Refine the mask or prompt.")
         _log_line({"route": "/inpaint-image", "ok": True})
         return jsonify({"ok": True, "images": images})
@@ -854,19 +797,25 @@ def bg_swap():
         img = _b64_to_pil(b64)
         img_bytes = _img_to_bytes(img, "PNG")
 
-        # 1) Remove background (returns a URL to a PNG with alpha)
+        # 1) Remove background (returns a URL/PNG)
         cutout = replicate_client.run(_spec(REPLICATE_RMBG_MODEL, REPLICATE_RMBG_VERSION), input={"image": img_bytes})
 
-        # 2) Compose into new scene (init image accepted as URL by most txt2img+img2img models)
-        out = replicate_client.run(_spec(REPLICATE_BGGEN_MODEL, REPLICATE_BGGEN_VERSION), input={
-            "prompt": prompt,
-            "image": cutout,
-            "strength": 0.65,
-            "num_inference_steps": 28,
-            "guidance_scale": 7
-        })
-        images = out if isinstance(out, list) else [out]
-        images = [u for u in images if u]
+        # Normalize just in case RMBG returns a list/dict
+        cut_urls = _replicate_to_urls(cutout)
+        cut_src = cut_urls[0] if cut_urls else str(cutout)
+
+        # 2) Compose into new scene
+        out = replicate_client.run(
+            _spec(REPLICATE_BGGEN_MODEL, REPLICATE_BGGEN_VERSION),
+            input={
+                "prompt": prompt,
+                "image": cut_src,         # most models accept URL here
+                "strength": 0.65,
+                "num_inference_steps": 28,
+                "guidance_scale": 7
+            }
+        )
+        images = _replicate_to_urls(out)
         if not images: return _reject("No image produced. Try another prompt.")
         _log_line({"route": "/bg-swap", "ok": True})
         return jsonify({"ok": True, "images": images})
