@@ -1,11 +1,3 @@
-# api.py — Droxion backend (Flask + Replicate)
-# - Remix (img2img/SDXL)
-# - Inpaint (mask: white=edit, black=keep)  ✅ uploads image+mask
-# - Background remove/swap (simple demo)
-#
-# Returns only JSON-safe values (plain strings/URLs).
-# No FileOutput objects are leaked to Flask/JSON.
-
 import os
 import io
 import base64
