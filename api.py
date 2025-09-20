@@ -182,6 +182,34 @@ def _img_to_bytes(img: Image.Image, mode="PNG") -> io.BytesIO:
 
 def _safe_image_models_ready() -> bool:
     return bool(replicate_client)
+def _replicate_to_urls(out):
+    """
+    Normalize Replicate responses into a list of URL strings.
+    Handles lists (FileOutput/str), dicts with 'images', and single objects.
+    """
+    try:
+        # List response
+        if isinstance(out, list):
+            return [str(x) for x in out if x]
+
+        # Dict response (some models return {"images": [...]}, or nested)
+        if isinstance(out, dict):
+            if "images" in out and isinstance(out["images"], list):
+                return [str(x) for x in out["images"] if x]
+            if "output" in out and isinstance(out["output"], dict) and "images" in out["output"]:
+                return [str(x) for x in out["output"]["images"] if x]
+            for k in ("image", "url", "result"):
+                if k in out and out[k]:
+                    v = out[k]
+                    if isinstance(v, list):
+                        return [str(x) for x in v if x]
+                    return [str(v)]
+
+        # Fallback: single object → string
+        s = str(out)
+        return [s] if s else []
+    except Exception:
+        return []
 
 def _spec(model: str, version: str = "") -> str:
     """Return 'owner/model:version' if version provided and ':' not already in model."""
