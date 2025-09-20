@@ -36,18 +36,29 @@ TTS_FORMAT          = os.getenv("TTS_FORMAT", "mp3")             # mp3 | wav | o
 MAX_TTS_CHARS       = int(os.getenv("MAX_TTS_CHARS", "900"))     # safety trim for long answers
 
 # --- Image Remix Suite (Replicate) ---
-REPLICATE_API_TOKEN     = os.getenv("REPLICATE_API_TOKEN", "")
-REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL", "zsxkib/instantid-sdxl:latest")
-REPLICATE_INPAINT_MODEL = os.getenv("REPLICATE_INPAINT_MODEL", "stability-ai/sdxl-inpaint:latest")
-REPLICATE_RMBG_MODEL    = os.getenv("REPLICATE_RMBG_MODEL", "jianfch/stable-diffusion-rembg:latest")
-REPLICATE_BGGEN_MODEL   = os.getenv("REPLICATE_BGGEN_MODEL", "stability-ai/sdxl:latest")
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
+
+# You can provide either "owner/model" OR "owner/model:version". If you give only the model,
+# we'll append the VERSION env var when available.
+# Known-good default for INPAINT uses explicit version to avoid 422 "invalid version".
+REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL",   "stability-ai/sdxl")  # txt2img & img2img
+REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")                  # optional
+
+REPLICATE_INPAINT_MODEL   = os.getenv("REPLICATE_INPAINT_MODEL",   "stability-ai/stable-diffusion-inpainting")
+REPLICATE_INPAINT_VERSION = os.getenv("REPLICATE_INPAINT_VERSION", "a9758cbf7ce14f33a6178d99d12b8f0d9d4cd7c33c3d08efb505de87f1cfcc0b")
+
+REPLICATE_RMBG_MODEL    = os.getenv("REPLICATE_RMBG_MODEL",    "jianfch/stable-diffusion-rembg")
+REPLICATE_RMBG_VERSION  = os.getenv("REPLICATE_RMBG_VERSION",  "")  # optional
+
+REPLICATE_BGGEN_MODEL   = os.getenv("REPLICATE_BGGEN_MODEL",   "stability-ai/sdxl")
+REPLICATE_BGGEN_VERSION = os.getenv("REPLICATE_BGGEN_VERSION", "")  # optional
 
 replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN) if REPLICATE_API_TOKEN else None
 
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
+app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/public")
 CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=False)
 
 # ========================
@@ -160,13 +171,18 @@ def _openai_vision(prompt: str, img_bytes: bytes, mime: str) -> str:
 # ---- Image helpers ----
 def _b64_to_pil(b64_str: str) -> Image.Image:
     data = (b64_str or "").split(",")[-1]
-    return Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
+    return Image.open(io.BytesIO(base64.b64decode(data)))
 
 def _img_to_bytes(img: Image.Image, mode="PNG") -> io.BytesIO:
     buf = io.BytesIO(); img.save(buf, format=mode); buf.seek(0); return buf
 
 def _safe_image_models_ready() -> bool:
     return bool(replicate_client)
+
+def _spec(model: str, version: str = "") -> str:
+    """Return 'owner/model:version' if version provided and ':' not already in model."""
+    if ":" in (model or ""): return model
+    return f"{model}:{version}" if version else model
 
 # ========================
 # ---- Source builders ---
@@ -362,7 +378,7 @@ def imagine():
     Behavior:
       - text only => txt2img (SDXL)
       - image only + prompt => remix (img2img, SDXL)
-      - image + mask + prompt => inpaint (SDXL-inpaint)
+      - image + mask + prompt => inpaint (Stable Diffusion Inpainting)
     """
     try:
         if not _safe_image_models_ready():
@@ -380,7 +396,7 @@ def imagine():
         # --- CASE A: text-only => txt2img (SDXL)
         if not img_b64:
             out = replicate_client.run(
-                REPLICATE_BGGEN_MODEL or REPLICATE_REMIX_MODEL or "stability-ai/sdxl",
+                _spec(REPLICATE_BGGEN_MODEL, REPLICATE_BGGEN_VERSION),
                 input={
                     "prompt": prompt,
                     "num_inference_steps": 28,
@@ -393,10 +409,10 @@ def imagine():
             return jsonify({"ok": True, "mode": "txt2img", "images": images})
 
         # --- build base image bytes
-        base_img = _b64_to_pil(img_b64)
+        base_img = _b64_to_pil(img_b64).convert("RGBA")
         base_bytes = _img_to_bytes(base_img, "PNG")
 
-        # --- CASE B: image + mask => inpaint
+        # --- CASE B: image + mask => inpaint  (explicit version to avoid 422)
         if mask_b64:
             mask_img = _b64_to_pil(mask_b64).convert("L")
             if mask_img.size != base_img.size:
@@ -404,7 +420,7 @@ def imagine():
             mask_bytes = _img_to_bytes(mask_img, "PNG")
 
             out = replicate_client.run(
-                REPLICATE_INPAINT_MODEL or "stability-ai/sdxl-inpaint",
+                _spec(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION),
                 input={
                     "image": base_bytes,
                     "mask": mask_bytes,
@@ -420,13 +436,13 @@ def imagine():
 
         # --- CASE C: image only + prompt => remix (img2img)
         out = replicate_client.run(
-            REPLICATE_REMIX_MODEL or "stability-ai/sdxl",
+            _spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION),
             input={
                 "prompt": prompt,
                 "image": base_bytes,
                 "num_inference_steps": 28,
                 "guidance_scale": 7,
-                "strength": style_strength  # some SDXL builds use "strength" instead of "style_strength"
+                "strength": style_strength  # many SDXL builds use "strength"
             }
         )
         images = out if isinstance(out, list) else [out]
@@ -437,6 +453,7 @@ def imagine():
     except Exception as e:
         traceback.print_exc()
         return _json_error(f"imagine failed: {_safe_str(e)}", 500)
+
 # ---------- Realtime ----------
 @app.post("/realtime")
 def realtime():
@@ -697,7 +714,7 @@ def img_proxy():
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp
     except Exception:
-        return Response(b"", status=502)
+        return Response(b="", status=502)
 
 # ===============================
 # --- Image Remix Suite ROUTES ---
@@ -720,7 +737,7 @@ def remix_image():
         if not b64:    return _reject("No image provided.")
         if not prompt: return _reject("Please add a prompt.")
 
-        img = _b64_to_pil(b64)
+        img = _b64_to_pil(b64).convert("RGBA")
         img_bytes = _img_to_bytes(img, "PNG")
 
         inputs = {
@@ -728,12 +745,12 @@ def remix_image():
             "image": img_bytes,            # file-like object
             "guidance_scale": 7,
             "num_inference_steps": 28,
-            "style_strength": style_strength,
+            "strength": style_strength,
             "seed": None,
         }
         inputs = {k:v for k,v in inputs.items() if v is not None}
 
-        out = replicate_client.run(REPLICATE_REMIX_MODEL, input=inputs)
+        out = replicate_client.run(_spec(REPLICATE_REMIX_MODEL, REPLICATE_REMIX_VERSION), input=inputs)
         images = out if isinstance(out, list) else [out]
         images = [u for u in images if u]
         if not images: return _reject("No image produced. Try a different prompt.")
@@ -770,7 +787,7 @@ def inpaint_image():
         base_bytes = _img_to_bytes(base_img, "PNG")
         mask_bytes = _img_to_bytes(mask_img, "PNG")
 
-        out = replicate_client.run(REPLICATE_INPAINT_MODEL, input={
+        out = replicate_client.run(_spec(REPLICATE_INPAINT_MODEL, REPLICATE_INPAINT_VERSION), input={
             "image": base_bytes,
             "mask": mask_bytes,
             "prompt": prompt,
@@ -806,10 +823,10 @@ def bg_swap():
         img_bytes = _img_to_bytes(img, "PNG")
 
         # 1) Remove background (returns a URL to a PNG with alpha)
-        cutout = replicate_client.run(REPLICATE_RMBG_MODEL, input={"image": img_bytes})
+        cutout = replicate_client.run(_spec(REPLICATE_RMBG_MODEL, REPLICATE_RMBG_VERSION), input={"image": img_bytes})
 
         # 2) Compose into new scene (init image accepted as URL by most txt2img+img2img models)
-        out = replicate_client.run(REPLICATE_BGGEN_MODEL, input={
+        out = replicate_client.run(_spec(REPLICATE_BGGEN_MODEL, REPLICATE_BGGEN_VERSION), input={
             "prompt": prompt,
             "image": cutout,
             "strength": 0.65,
