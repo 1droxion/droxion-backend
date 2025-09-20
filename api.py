@@ -1,12 +1,39 @@
-import os
-import io
 import base64
-from typing import List
-
+import io
 from flask import Flask, request, jsonify
-from flask_cors import CORS
-from PIL import Image
 import replicate
+
+app = Flask(__name__)
+client = replicate.Client(api_token="YOUR_REPLICATE_API_TOKEN")
+
+@app.route("/inpaint-image", methods=["POST"])
+def inpaint_image():
+    try:
+        data = request.get_json()
+        image_b64 = data.get("image_base64")
+        mask_b64 = data.get("mask_base64")
+        prompt = data.get("prompt", "")
+
+        if not image_b64 or not mask_b64:
+            return jsonify({"ok": False, "error": "Image or mask missing"}), 400
+
+        # Convert base64 to file-like objects
+        img_bytes = io.BytesIO(base64.b64decode(image_b64.split(",")[1]))
+        mask_bytes = io.BytesIO(base64.b64decode(mask_b64.split(",")[1]))
+
+        output = client.run(
+            "lucataco/sdxl-inpainting",
+            input={
+                "image": img_bytes,
+                "mask": mask_bytes,
+                "prompt": prompt,
+            }
+        )
+
+        return jsonify({"ok": True, "images": output})
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 # ------------ ENV & CONFIG ------------
 
