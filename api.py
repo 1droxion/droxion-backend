@@ -304,6 +304,17 @@ def weather():
         traceback.print_exc()
         return _json_error(f"weather failed: {_safe_str(e)}", 500)
 
+@app.get("/debug-replicate")
+def debug_replicate():
+    return jsonify({
+        "REPLICATE_API_TOKEN_set": bool(REPLICATE_API_TOKEN),
+        "inpaint_model_env": REPLICATE_INPAINT_MODEL,
+        "inpaint_version_env": REPLICATE_INPAINT_VERSION,
+        "remix_model_env": REPLICATE_REMIX_MODEL,
+        "remix_version_env": REPLICATE_REMIX_VERSION,
+        "rmbg_model_env": REPLICATE_RMBG_MODEL,
+        "bggen_model_env": REPLICATE_BGGEN_MODEL,
+    })
 # ========================
 # ------- Routes ---------
 # ========================
