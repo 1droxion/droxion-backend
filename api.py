@@ -41,16 +41,20 @@ REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
 # You can provide either "owner/model" OR "owner/model:version". If you give only the model,
 # we'll append the VERSION env var when available.
 # Known-good default for INPAINT uses explicit version to avoid 422 "invalid version".
-REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL",   "stability-ai/sdxl")  # txt2img & img2img
-REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")                  # optional
+# --- Replicate Models & Versions (explicit pinning) ---
+# Use "owner/model" only (no :latest). Version hashes are appended automatically if present.
 
-REPLICATE_INPAINT_MODEL   = os.getenv("REPLICATE_INPAINT_MODEL",   "stability-ai/stable-diffusion-inpainting")
+REPLICATE_REMIX_MODEL   = os.getenv("REPLICATE_REMIX_MODEL", "stability-ai/sdxl")  # txt2img & img2img
+REPLICATE_REMIX_VERSION = os.getenv("REPLICATE_REMIX_VERSION", "")  # optional but recommended for stability
+
+# Known-good default for INPAINT uses explicit version to avoid 422 errors.
+REPLICATE_INPAINT_MODEL   = os.getenv("REPLICATE_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
 REPLICATE_INPAINT_VERSION = os.getenv("REPLICATE_INPAINT_VERSION", "8820991880abea5f1a57722e6ca1625117e39312")
 
-REPLICATE_RMBG_MODEL    = os.getenv("REPLICATE_RMBG_MODEL",    "jianfch/stable-diffusion-rembg")
-REPLICATE_RMBG_VERSION  = os.getenv("REPLICATE_RMBG_VERSION",  "")  # optional
+REPLICATE_RMBG_MODEL   = os.getenv("REPLICATE_RMBG_MODEL", "jianfch/stable-diffusion-rembg")
+REPLICATE_RMBG_VERSION = os.getenv("REPLICATE_RMBG_VERSION", "")  # optional
 
-REPLICATE_BGGEN_MODEL   = os.getenv("REPLICATE_BGGEN_MODEL",   "stability-ai/sdxl")
+REPLICATE_BGGEN_MODEL   = os.getenv("REPLICATE_BGGEN_MODEL", "stability-ai/sdxl")
 REPLICATE_BGGEN_VERSION = os.getenv("REPLICATE_BGGEN_VERSION", "")  # optional
 
 replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN) if REPLICATE_API_TOKEN else None
