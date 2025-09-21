@@ -1,53 +1,59 @@
-# api.py — Droxion backend (ChatGPT-quality chat + image edit routes)
-# - Chat: GPT-4o primary, Claude 3.5, then Gemini 1.5 fallback
-# - Image: Remix / Inpaint via Replicate (serializes outputs to URLs)
-# - BG Swap: optional (no 404; returns 501 unless configured)
-# - CORS enabled, helpful JSON errors
+# api.py — Droxion backend (ChatGPT-quality chat + identity-safe image tools)
+# - /chat: GPT-4o → Claude 3.5 Sonnet → Gemini 1.5 Pro (auto-fallbacks)
+# - /remix-image: style remix (keeps structure) via Instruct-Pix2Pix
+# - /inpaint-image: mask edits (white=change, black=keep)
+# - /remix-face-locked: ID-locked remix (same face) via InstantID/IP-Adapter-style model
+# - /bg-swap: optional subject cutout + generated background (returns both URLs)
+# - All Replicate outputs are strings/URLs (fixes JSON serialization errors)
+# - CORS enabled; helpful errors
 
 import os
-import base64
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# ===== Optional SDKs (install if you want the fallbacks) =====
-# requirements (add): openai>=1.0.0 anthropic google-generativeai replicate
+# === Providers (install listed in requirements.txt) ===
+# openai>=1.0.0 anthropic google-generativeai replicate
 from openai import OpenAI
 import anthropic
 import google.generativeai as genai
 import replicate
 
-# ---------- Flask ----------
 app = Flask(__name__)
 CORS(app)
 
-# ---------- ENV ----------
+# ===== ENV =====
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+# REPLICATE_API_TOKEN must be set for the replicate SDK to work
 
-# Replicate models (set latest hashes in env to avoid 422)
+# Image models (put latest version hashes in *_VERSION to avoid 422)
 IMG_REPIX_MODEL   = os.getenv("IMG_REPIX_MODEL", "timbrooks/instruct-pix2pix")
-IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")  # paste a valid version hash
+IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")  # paste latest hash from model page
 
 IMG_INPAINT_MODEL   = os.getenv("IMG_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
-IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")  # paste a valid version hash
+IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")  # paste latest hash
 
-# Optional (only if you want fully automatic BG swap)
-BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")      # e.g. "cjwbw/rembg" (if available to your account)
-BG_REMOVE_VERSION = os.getenv("BG_REMOVE_VERSION", "")    # version hash
-BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")    # e.g. "black-forest-labs/flux-schnell"
-BG_COMPOSE_VERSION = os.getenv("BG_COMPOSE_VERSION", "")  # version hash
+# Face lock (identity-preserving). Optional but recommended.
+FACE_LOCK_MODEL   = os.getenv("FACE_LOCK_MODEL", "")        # e.g. "tencentarc/instantid"
+FACE_LOCK_VERSION = os.getenv("FACE_LOCK_VERSION", "")
 
-# ---------- Clients (created lazily so missing keys don’t crash app) ----------
+# Face restore (sharpen only; no identity change). Optional.
+FACE_RESTORE_MODEL   = os.getenv("FACE_RESTORE_MODEL", "")  # e.g. "sczhou/codeformer"
+FACE_RESTORE_VERSION = os.getenv("FACE_RESTORE_VERSION", "")
+
+# Background swap (optional pipeline)
+BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")        # e.g. "cjwbw/rembg"
+BG_REMOVE_VERSION = os.getenv("BG_REMOVE_VERSION", "")
+BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")      # e.g. "black-forest-labs/flux-schnell"
+BG_COMPOSE_VERSION = os.getenv("BG_COMPOSE_VERSION", "")
+
+# ===== Clients (lazy) =====
 def get_openai():
-    if not OPENAI_API_KEY:
-        return None
-    return OpenAI(api_key=OPENAI_API_KEY)
+    return OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 def get_anthropic():
-    if not ANTHROPIC_API_KEY:
-        return None
-    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
 def get_gemini():
     if not GOOGLE_API_KEY:
@@ -55,61 +61,61 @@ def get_gemini():
     genai.configure(api_key=GOOGLE_API_KEY)
     return genai
 
-# ---------- Helpers ----------
+# ===== Helpers =====
 def err(status, msg, detail=None):
     out = {"ok": False, "error": msg}
     if detail:
         out["detail"] = str(detail)
     return jsonify(out), status
 
-def str_urls(rep_result):
-    """
-    Replicate may return:
-      - list[str URLs]
-      - list[FileOutput]
-      - single URL / object
-    Normalize to List[str].
-    """
-    if rep_result is None:
-        return []
-    if isinstance(rep_result, list):
-        urls = []
-        for x in rep_result:
-            try:
-                if hasattr(x, "url"):
-                    urls.append(str(x.url))
-                else:
-                    urls.append(str(x))
-            except Exception:
-                urls.append(str(x))
-        return urls
-    # single object / URL
-    try:
-        if hasattr(rep_result, "url"):
-            return [str(rep_result.url)]
-        return [str(rep_result)]
-    except Exception:
-        return [repr(rep_result)]
-
-def require(v, name):
-    if not v:
+def require(val, name):
+    if not val:
         raise ValueError(f"{name} required")
 
 def b64_is_data_url(s: str) -> bool:
     return isinstance(s, str) and s.strip().startswith("data:image/")
 
-# ---------- Routes ----------
+def str_urls(rep_result):
+    """
+    Normalize Replicate outputs to List[str] of URLs.
+    Handles list[str], list[FileOutput], single URL/object.
+    """
+    if rep_result is None:
+        return []
+    if isinstance(rep_result, list):
+        out = []
+        for x in rep_result:
+            try:
+                out.append(str(x.url) if hasattr(x, "url") else str(x))
+            except Exception:
+                out.append(str(x))
+        return out
+    try:
+        return [str(rep_result.url)] if hasattr(rep_result, "url") else [str(rep_result)]
+    except Exception:
+        return [repr(rep_result)]
+
+# ===== Routes =====
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "service": "droxion", "chat": bool(OPENAI_API_KEY or ANTHROPIC_API_KEY or GOOGLE_API_KEY)})
+    return jsonify({
+        "ok": True,
+        "service": "droxion",
+        "chat": {
+            "openai": bool(OPENAI_API_KEY),
+            "anthropic": bool(ANTHROPIC_API_KEY),
+            "gemini": bool(GOOGLE_API_KEY),
+        }
+    })
 
-# ---- CHAT (GPT-4o -> Claude 3.5 -> Gemini 1.5) ----
+# ---- CHAT (GPT-4o → Claude 3.5 Sonnet → Gemini 1.5 Pro) ----
 @app.post("/chat")
 def chat():
     """
     Body:
-      { "messages": [{role: "user"/"system"/"assistant", "content": "..."}] }
-      or { "prompt": "..." } for simple use
+      { "messages": [{role, content}, ...] } OR { "prompt": "..." }
+    Returns:
+      { ok, model, text }
     """
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -125,42 +131,37 @@ def chat():
         try:
             oc = get_openai()
             if oc:
-                rsp = oc.chat.completions.create(
+                resp = oc.chat.completions.create(
                     model="gpt-4o",
                     messages=messages_in,
-                    temperature=0.2,
+                    temperature=0.2
                 )
-                out = rsp.choices[0].message.content
-                return jsonify({"ok": True, "model": "gpt-4o", "text": out})
-        except Exception as e:
-            # fall through to next
+                return jsonify({"ok": True, "model": "gpt-4o", "text": resp.choices[0].message.content})
+        except Exception:
             pass
 
         # 2) Claude 3.5 Sonnet
         try:
             ac = get_anthropic()
             if ac:
-                # Convert to Anthropic format
                 sys_prompt = ""
-                user_turns = []
+                convo = []
                 for m in messages_in:
                     r, c = m.get("role"), m.get("content", "")
                     if r == "system":
-                        sys_prompt = f"{sys_prompt}\n{c}".strip()
+                        sys_prompt = (sys_prompt + "\n" + c).strip()
                     elif r in ("user", "assistant"):
-                        user_turns.append({"role": r, "content": c})
-
+                        convo.append({"role": r, "content": c})
                 msg = ac.messages.create(
                     model="claude-3-5-sonnet-20240620",
                     max_tokens=1024,
                     temperature=0.2,
                     system=sys_prompt or None,
-                    messages=user_turns,
+                    messages=convo
                 )
                 out = "".join([b.text for b in msg.content if hasattr(b, "text")])
                 return jsonify({"ok": True, "model": "claude-3.5-sonnet", "text": out})
-        except Exception as e:
-            # fall through to next
+        except Exception:
             pass
 
         # 3) Gemini 1.5 Pro
@@ -168,58 +169,47 @@ def chat():
             g = get_gemini()
             if g:
                 model = g.GenerativeModel("gemini-1.5-pro")
-                # Concatenate simple chat into one prompt (for MVP)
-                stitched = []
-                for m in messages_in:
-                    stitched.append(f"{m.get('role','user')}: {m.get('content','')}")
-                gem_prompt = "\n".join(stitched)
-                resp = model.generate_content(gem_prompt)
-                out = resp.text or ""
-                return jsonify({"ok": True, "model": "gemini-1.5-pro", "text": out})
-        except Exception as e:
+                stitched = "\n".join([f"{m.get('role','user')}: {m.get('content','')}" for m in messages_in])
+                resp = model.generate_content(stitched)
+                return jsonify({"ok": True, "model": "gemini-1.5-pro", "text": resp.text or ""})
+        except Exception:
             pass
 
         return err(502, "all providers failed (OpenAI → Anthropic → Gemini)")
-
     except Exception as e:
         return err(500, "server_error", e)
 
-# ---- IMAGE: REMIX (Instruct-Pix2Pix) ----
+# ---- IMAGE: REMIX (style remix, keeps structure) ----
 @app.post("/remix-image")
 def remix_image():
     try:
         data = request.get_json(force=True, silent=True) or {}
         img_b64 = data.get("image_base64")
         prompt = data.get("prompt", "")
-        style_strength = float(data.get("style_strength", 0.6))
+        style_strength = float(data.get("style_strength", 0.5))  # 0..1
+        # Tip: 0.35–0.55 preserves identity well
 
         require(img_b64, "image_base64")
         require(prompt, "prompt")
 
-        model = f"{IMG_REPIX_MODEL}:{IMG_REPIX_VERSION}" if IMG_REPIX_VERSION else IMG_REPIX_MODEL
-
-        out = replicate.run(
-            model,
-            input={
-                "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
-                "prompt": prompt,
-                "num_outputs": 1,
-                "guidance_scale": 7.5,
-                # 0..1 — higher = stronger style push
-                "image_guidance_scale": max(0.0, min(style_strength, 1.0)),
-            },
-        )
+        model_ref = f"{IMG_REPIX_MODEL}:{IMG_REPIX_VERSION}" if IMG_REPIX_VERSION else IMG_REPIX_MODEL
+        out = replicate.run(model_ref, input={
+            "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
+            "prompt": prompt,
+            "num_outputs": 1,
+            "guidance_scale": 7.5,
+            "image_guidance_scale": max(0.0, min(style_strength, 1.0))
+        })
         urls = str_urls(out)
         if not urls:
             return err(502, "no image returned from replicate")
         return jsonify({"ok": True, "images": urls})
-
     except replicate.exceptions.ReplicateError as e:
         return err(422, "replicate_error", e)
     except Exception as e:
         return err(500, "server_error", e)
 
-# ---- IMAGE: INPAINT ----
+# ---- IMAGE: INPAINT (mask white=change, black=keep) ----
 @app.post("/inpaint-image")
 def inpaint_image():
     try:
@@ -232,36 +222,88 @@ def inpaint_image():
         require(mask_b64, "mask_base64")
         require(prompt, "prompt")
 
-        model = f"{IMG_INPAINT_MODEL}:{IMG_INPAINT_VERSION}" if IMG_INPAINT_VERSION else IMG_INPAINT_MODEL
-
-        out = replicate.run(
-            model,
-            input={
-                "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
-                "mask": mask_b64 if b64_is_data_url(mask_b64) else str(mask_b64),
-                "prompt": prompt,
-            },
-        )
+        model_ref = f"{IMG_INPAINT_MODEL}:{IMG_INPAINT_VERSION}" if IMG_INPAINT_VERSION else IMG_INPAINT_MODEL
+        out = replicate.run(model_ref, input={
+            "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
+            "mask": mask_b64 if b64_is_data_url(mask_b64) else str(mask_b64),
+            "prompt": prompt
+        })
         urls = str_urls(out)
         if not urls:
             return err(502, "no image returned from replicate")
         return jsonify({"ok": True, "images": urls})
-
     except replicate.exceptions.ReplicateError as e:
         return err(422, "replicate_error", e)
     except Exception as e:
         return err(500, "server_error", e)
 
-# ---- IMAGE: BACKGROUND SWAP (optional) ----
+# ---- IMAGE: FACE-LOCKED REMIX (same person identity) ----
+@app.post("/remix-face-locked")
+def remix_face_locked():
+    """
+    JSON:
+      image_base64: data:image/*;base64,...
+      prompt: "pixar style portrait..." (light prompt recommended)
+      id_image_base64?: optional separate reference; if missing, uses image_base64
+      strength?: 0..1 (default 0.45) lower = stronger identity lock
+      restore_face?: bool (default True)
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        img_b64 = data.get("image_base64")
+        prompt = data.get("prompt", "")
+        id_b64 = data.get("id_image_base64") or img_b64
+        strength = float(data.get("strength", 0.45))
+        restore_face = bool(data.get("restore_face", True))
+
+        require(img_b64, "image_base64")
+
+        if not FACE_LOCK_MODEL:
+            return err(501, "face_lock_not_configured",
+                       "Set FACE_LOCK_MODEL / FACE_LOCK_VERSION in env.")
+        model_ref = f"{FACE_LOCK_MODEL}:{FACE_LOCK_VERSION}" if FACE_LOCK_VERSION else FACE_LOCK_MODEL
+
+        gen = replicate.run(model_ref, input={
+            # keys vary by repo; these are commonly accepted or ignored harmlessly
+            "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
+            "id_image": id_b64 if b64_is_data_url(id_b64) else str(id_b64),
+            "prompt": prompt,
+            "denoise_strength": max(0.2, min(strength, 0.8)),
+            "num_outputs": 1,
+            "guidance_scale": 6.5
+        })
+        urls = str_urls(gen)
+        if not urls:
+            return err(502, "no image returned from face_lock model")
+        out_url = urls[0]
+
+        if restore_face and FACE_RESTORE_MODEL:
+            fr_ref = f"{FACE_RESTORE_MODEL}:{FACE_RESTORE_VERSION}" if FACE_RESTORE_VERSION else FACE_RESTORE_MODEL
+            fr = replicate.run(fr_ref, input={
+                "image": out_url,
+                # typical param for CodeFormer-like models
+                "fidelity": 0.7
+            })
+            fr_urls = str_urls(fr)
+            if fr_urls:
+                out_url = fr_urls[0]
+
+        return jsonify({"ok": True, "images": [out_url]})
+    except replicate.exceptions.ReplicateError as e:
+        return err(422, "replicate_error", e)
+    except Exception as e:
+        return err(500, "server_error", e)
+
+# ---- IMAGE: BACKGROUND SWAP (subject cutout + generated BG) ----
 @app.post("/bg-swap")
 def bg_swap():
     """
-    MVP behavior:
-    - If BG_* env vars are set, try:
-        1) remove background -> subject PNG
-        2) compose a new background from text prompt (text2img)
-       (You will still receive a list of image URLs.)
-    - If models are not configured, return 501 but NOT 404.
+    JSON:
+      image_base64: data:image/*;base64,...
+      prompt: "new background description"
+    Returns (MVP):
+      { ok, subject_png: [url], background: [url] }
+    Compose client-side by overlaying subject_png on background.
     """
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -272,32 +314,32 @@ def bg_swap():
         require(prompt, "prompt")
 
         if not (BG_REMOVE_MODEL and (BG_REMOVE_VERSION or ":" not in BG_REMOVE_MODEL)):
-            return err(501, "bg_swap_not_configured", "set BG_REMOVE_MODEL/BG_REMOVE_VERSION & BG_COMPOSE_MODEL/BG_COMPOSE_VERSION")
-
+            return err(501, "bg_swap_not_configured",
+                       "Set BG_REMOVE_MODEL/BG_REMOVE_VERSION & BG_COMPOSE_MODEL/BG_COMPOSE_VERSION.")
         if not (BG_COMPOSE_MODEL and (BG_COMPOSE_VERSION or ":" not in BG_COMPOSE_MODEL)):
-            return err(501, "bg_swap_not_configured", "set BG_COMPOSE_MODEL/BG_COMPOSE_VERSION")
+            return err(501, "bg_swap_not_configured",
+                       "Set BG_COMPOSE_MODEL/BG_COMPOSE_VERSION.")
 
-        # 1) Remove background
-        remove_model = f"{BG_REMOVE_MODEL}:{BG_REMOVE_VERSION}" if BG_REMOVE_VERSION else BG_REMOVE_MODEL
-        cut = replicate.run(remove_model, input={"image": img_b64 if b64_is_data_url(img_b64) else str(img_b64)})
+        # 1) Subject cutout
+        rm_ref = f"{BG_REMOVE_MODEL}:{BG_REMOVE_VERSION}" if BG_REMOVE_VERSION else BG_REMOVE_MODEL
+        cut = replicate.run(rm_ref, input={
+            "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64)
+        })
         cut_urls = str_urls(cut)
         require(cut_urls, "background removal output")
 
-        # 2) Generate new background (text2img)
-        compose_model = f"{BG_COMPOSE_MODEL}:{BG_COMPOSE_VERSION}" if BG_COMPOSE_VERSION else BG_COMPOSE_MODEL
-        bg = replicate.run(compose_model, input={"prompt": prompt, "width": 1024, "height": 1024})
+        # 2) Generate new background
+        bg_ref = f"{BG_COMPOSE_MODEL}:{BG_COMPOSE_VERSION}" if BG_COMPOSE_VERSION else BG_COMPOSE_MODEL
+        bg = replicate.run(bg_ref, input={"prompt": prompt, "width": 1024, "height": 1024})
         bg_urls = str_urls(bg)
         require(bg_urls, "background compose output")
 
-        # NOTE: For a pure server-side composite you’d need a separate compositor step.
-        # Returning both URLs lets the frontend overlay subject PNG onto bg (quick MVP).
         return jsonify({"ok": True, "subject_png": cut_urls[:1], "background": bg_urls[:1]})
-
     except replicate.exceptions.ReplicateError as e:
         return err(422, "replicate_error", e)
     except Exception as e:
         return err(500, "server_error", e)
 
-# ---------- main ----------
+# ---- main ----
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
