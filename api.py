@@ -1,22 +1,24 @@
-# api.py — Droxion backend (Chat + Identity-safe Image Tools)
+# api.py — Droxion backend (Chat + identity-safe image tools)
 # - /chat: GPT-4o → Claude 3.5 Sonnet → Gemini 1.5 Pro (auto-fallbacks)
-# - /remix-image: style remix (fixed: image_guidance_scale >= 1)
-# - /inpaint-image: mask edits (white=change, black=keep)
-# - /remix-face-locked: identity-preserving remix (InstantID/IP-Adapter style)
-# - /bg-swap: optional subject cutout + generated background (returns both URLs)
-# - Replicate outputs are always URLs (no JSON serialization errors)
-# - CORS + helpful JSON errors + /health route
+# - /remix-image: style remix (keeps structure) via Instruct-Pix2Pix (with auto-resize + OOM retry)
+# - /inpaint-image: mask edits (white=change, black=keep) (with auto-resize)
+# - /remix-face-locked: ID-locked remix (optional)
+# - /bg-swap: subject cutout + generated background (optional)
+# - All Replicate outputs become plain URLs (strings)
+# - CORS enabled; helpful errors
 
-import os
+import os, io, base64
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# ---- Providers (install in requirements.txt) ----
-# openai>=1.0.0 anthropic google-generativeai replicate
+# === Providers (install listed in requirements.txt) ===
+# pip install: flask flask-cors openai anthropic google-generativeai replicate requests stripe pillow
 from openai import OpenAI
 import anthropic
 import google.generativeai as genai
 import replicate
+from replicate.exceptions import ReplicateError
+from PIL import Image
 
 app = Flask(__name__)
 CORS(app)
@@ -25,27 +27,28 @@ CORS(app)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-# REPLICATE_API_TOKEN must be set for the replicate SDK to work.
+# REPLICATE_API_TOKEN must be set for the replicate SDK to work
 
-# Image models (put latest version hashes in *_VERSION to avoid 422)
+# Image models (keep names EXACT + set VERSION hashes to avoid 404/422)
+# NOTE: Correct owner is "timothybrooks" (not "timbrooks" or "imothybrooks")
 IMG_REPIX_MODEL   = os.getenv("IMG_REPIX_MODEL", "timothybrooks/instruct-pix2pix")
-IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")  # paste latest hash
+IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")  # paste latest 64-char hash
 
 IMG_INPAINT_MODEL   = os.getenv("IMG_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
-IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")  # paste latest hash
+IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")
 
-# Face lock (identity-preserving). Optional but recommended.
-FACE_LOCK_MODEL   = os.getenv("FACE_LOCK_MODEL", "")        # e.g. "tencentarc/instantid" or "zsxkib/instant-id"
+# Face lock (identity-preserving). Optional.
+FACE_LOCK_MODEL   = os.getenv("FACE_LOCK_MODEL", "")
 FACE_LOCK_VERSION = os.getenv("FACE_LOCK_VERSION", "")
 
 # Face restore (sharpen only; no identity change). Optional.
-FACE_RESTORE_MODEL   = os.getenv("FACE_RESTORE_MODEL", "")  # e.g. "sczhou/codeformer"
+FACE_RESTORE_MODEL   = os.getenv("FACE_RESTORE_MODEL", "")
 FACE_RESTORE_VERSION = os.getenv("FACE_RESTORE_VERSION", "")
 
-# Background swap (optional pipeline)
-BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")        # e.g. "cjwbw/rembg"
+# Background swap (optional)
+BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")
 BG_REMOVE_VERSION = os.getenv("BG_REMOVE_VERSION", "")
-BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")      # e.g. "black-forest-labs/flux-schnell"
+BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")
 BG_COMPOSE_VERSION = os.getenv("BG_COMPOSE_VERSION", "")
 
 # ===== Clients (lazy) =====
@@ -75,6 +78,40 @@ def require(val, name):
 def b64_is_data_url(s: str) -> bool:
     return isinstance(s, str) and s.strip().startswith("data:image/")
 
+def _dataurl_to_bytes(data_url: str) -> bytes | None:
+    if isinstance(data_url, str) and data_url.startswith("data:"):
+        return base64.b64decode(data_url.split(",", 1)[1])
+    return None
+
+def _bytes_to_dataurl(img_bytes: bytes, fmt="PNG") -> str:
+    mime = "image/png" if fmt.upper() == "PNG" else "image/jpeg"
+    b64 = base64.b64encode(img_bytes).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+def resize_data_url(data_url: str, max_side: int = 768, is_mask: bool = False) -> str:
+    """
+    Downscale keeping aspect. Masks use NEAREST to keep crisp edges.
+    If input is not a data URL, return unchanged (Replicate accepts http(s) URLs too).
+    """
+    raw = _dataurl_to_bytes(data_url)
+    if raw is None:
+        return data_url
+    im = Image.open(io.BytesIO(raw))
+    if is_mask:
+        if im.mode != "L":
+            im = im.convert("L")
+    else:
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+    w, h = im.size
+    scale = min(1.0, float(max_side) / max(w, h))
+    if scale < 1.0:
+        new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+        im = im.resize(new_size, Image.NEAREST if is_mask else Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    return _bytes_to_dataurl(buf.getvalue(), fmt="PNG")
+
 def str_urls(rep_result):
     """
     Normalize Replicate outputs to List[str] of URLs.
@@ -95,24 +132,8 @@ def str_urls(rep_result):
     except Exception:
         return [repr(rep_result)]
 
-@app.get("/_debug-models")
-def debug_models():
-    def ref(model, version):
-        return f"{model}:{version}" if version else model
-    return jsonify({
-        "replicate_token_set": bool(os.getenv("REPLICATE_API_TOKEN")),
-        "IMG_REPIX_MODEL": IMG_REPIX_MODEL,
-        "IMG_REPIX_VERSION": IMG_REPIX_VERSION,
-        "IMG_REPIX_model_ref": ref(IMG_REPIX_MODEL, IMG_REPIX_VERSION),
-        "IMG_INPAINT_MODEL": IMG_INPAINT_MODEL,
-        "IMG_INPAINT_VERSION": IMG_INPAINT_VERSION,
-        "FACE_LOCK_MODEL": FACE_LOCK_MODEL,
-        "FACE_LOCK_VERSION": FACE_LOCK_VERSION,
-        "BG_REMOVE_MODEL": BG_REMOVE_MODEL,
-        "BG_REMOVE_VERSION": BG_REMOVE_VERSION,
-        "BG_COMPOSE_MODEL": BG_COMPOSE_MODEL,
-        "BG_COMPOSE_VERSION": BG_COMPOSE_VERSION,
-    })
+def model_ref(name: str, version: str) -> str:
+    return f"{name}:{version}" if version else name
 
 # ===== Routes =====
 @app.get("/health")
@@ -198,36 +219,60 @@ def chat():
     except Exception as e:
         return err(500, "server_error", e)
 
-# ---- IMAGE: REMIX (style remix; FIXED validation) ----
+# ---- IMAGE: REMIX (style remix, keeps structure) ----
 @app.post("/remix-image")
 def remix_image():
     try:
         data = request.get_json(force=True, silent=True) or {}
         img_b64 = data.get("image_base64")
-        prompt = data.get("prompt", "")
-        style_strength = float(data.get("style_strength", 0.5))  # slider 0..1
+        prompt = data.get("prompt", "").strip()
+        style_strength = float(data.get("style_strength", 0.45))  # 0..1
 
         require(img_b64, "image_base64")
         require(prompt, "prompt")
 
-        model_ref = f"{IMG_REPIX_MODEL}:{IMG_REPIX_VERSION}" if IMG_REPIX_VERSION else IMG_REPIX_MODEL
+        # auto-resize to avoid CUDA OOM
+        img_b64_small = resize_data_url(img_b64, max_side=768)
 
-        # FIX: Replicate now requires image_guidance_scale >= 1.
-        # Map slider [0..1] -> [1..3] (good range for remix without identity drift).
-        image_guidance_scale = max(1.0, min(3.0, style_strength * 3.0))
+        # safe ranges
+        style_strength = max(0.2, min(style_strength, 0.8))
+        image_guidance_scale = max(1.0, min(3.0, 1.0 + style_strength * 2.0))  # ~1.4–2.6 typical
+        guidance_scale = 7.0
 
-        out = replicate.run(model_ref, input={
-            "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
-            "prompt": prompt,
-            "num_outputs": 1,
-            "guidance_scale": 7.5,
-            "image_guidance_scale": image_guidance_scale
-        })
+        mref = model_ref(IMG_REPIX_MODEL, IMG_REPIX_VERSION)
+
+        def run_once(image_b64, igs=image_guidance_scale, gs=guidance_scale):
+            return replicate.run(mref, input={
+                "image": image_b64,
+                "prompt": prompt,
+                "num_outputs": 1,
+                "guidance_scale": gs,
+                "image_guidance_scale": igs
+            })
+
+        try:
+            out = run_once(img_b64_small)
+        except ReplicateError as e:
+            msg = str(e).lower()
+            # retry smaller & lighter on OOM
+            if "cuda out of memory" in msg or "oom" in msg:
+                img_b64_smaller = resize_data_url(img_b64, max_side=640)
+                out = replicate.run(mref, input={
+                    "image": img_b64_smaller,
+                    "prompt": prompt,
+                    "num_outputs": 1,
+                    "guidance_scale": 6.0,
+                    "image_guidance_scale": max(1.0, image_guidance_scale * 0.8),
+                })
+            else:
+                raise
+
         urls = str_urls(out)
         if not urls:
             return err(502, "no image returned from replicate")
         return jsonify({"ok": True, "images": urls})
-    except replicate.exceptions.ReplicateError as e:
+
+    except ReplicateError as e:
         return err(422, "replicate_error", e)
     except Exception as e:
         return err(500, "server_error", e)
@@ -239,23 +284,37 @@ def inpaint_image():
         data = request.get_json(force=True, silent=True) or {}
         img_b64 = data.get("image_base64")
         mask_b64 = data.get("mask_base64")
-        prompt = data.get("prompt", "")
+        prompt = data.get("prompt", "").strip()
 
         require(img_b64, "image_base64")
         require(mask_b64, "mask_base64")
         require(prompt, "prompt")
 
-        model_ref = f"{IMG_INPAINT_MODEL}:{IMG_INPAINT_VERSION}" if IMG_INPAINT_VERSION else IMG_INPAINT_MODEL
-        out = replicate.run(model_ref, input={
-            "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
-            "mask": mask_b64 if b64_is_data_url(mask_b64) else str(mask_b64),
-            "prompt": prompt
-        })
+        # ensure both are same resized size
+        img_small = resize_data_url(img_b64, max_side=768, is_mask=False)
+        mask_small = resize_data_url(mask_b64, max_side=768, is_mask=True)
+
+        mref = model_ref(IMG_INPAINT_MODEL, IMG_INPAINT_VERSION)
+
+        def run_once(i, m):
+            return replicate.run(mref, input={"image": i, "mask": m, "prompt": prompt})
+
+        try:
+            out = run_once(img_small, mask_small)
+        except ReplicateError as e:
+            if "cuda out of memory" in str(e).lower():
+                img_sm = resize_data_url(img_b64, max_side=640, is_mask=False)
+                mask_sm = resize_data_url(mask_b64, max_side=640, is_mask=True)
+                out = run_once(img_sm, mask_sm)
+            else:
+                raise
+
         urls = str_urls(out)
         if not urls:
             return err(502, "no image returned from replicate")
         return jsonify({"ok": True, "images": urls})
-    except replicate.exceptions.ReplicateError as e:
+
+    except ReplicateError as e:
         return err(422, "replicate_error", e)
     except Exception as e:
         return err(500, "server_error", e)
@@ -284,12 +343,15 @@ def remix_face_locked():
         if not FACE_LOCK_MODEL:
             return err(501, "face_lock_not_configured",
                        "Set FACE_LOCK_MODEL / FACE_LOCK_VERSION in env.")
-        model_ref = f"{FACE_LOCK_MODEL}:{FACE_LOCK_VERSION}" if FACE_LOCK_VERSION else FACE_LOCK_MODEL
+        mref = model_ref(FACE_LOCK_MODEL, FACE_LOCK_VERSION)
 
-        gen = replicate.run(model_ref, input={
-            # keys vary across repos; these are commonly accepted or ignored harmlessly
-            "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
-            "id_image": id_b64 if b64_is_data_url(id_b64) else str(id_b64),
+        # Resize for stability
+        i_small = resize_data_url(img_b64, max_side=768)
+        id_small = resize_data_url(id_b64, max_side=768)
+
+        gen = replicate.run(mref, input={
+            "image": i_small,
+            "id_image": id_small,
             "prompt": prompt,
             "denoise_strength": max(0.2, min(strength, 0.8)),
             "num_outputs": 1,
@@ -301,17 +363,14 @@ def remix_face_locked():
         out_url = urls[0]
 
         if restore_face and FACE_RESTORE_MODEL:
-            fr_ref = f"{FACE_RESTORE_MODEL}:{FACE_RESTORE_VERSION}" if FACE_RESTORE_VERSION else FACE_RESTORE_MODEL
-            fr = replicate.run(fr_ref, input={
-                "image": out_url,
-                "fidelity": 0.7  # typical CodeFormer knob
-            })
+            fr_ref = model_ref(FACE_RESTORE_MODEL, FACE_RESTORE_VERSION)
+            fr = replicate.run(fr_ref, input={"image": out_url, "fidelity": 0.7})
             fr_urls = str_urls(fr)
             if fr_urls:
                 out_url = fr_urls[0]
 
         return jsonify({"ok": True, "images": [out_url]})
-    except replicate.exceptions.ReplicateError as e:
+    except ReplicateError as e:
         return err(422, "replicate_error", e)
     except Exception as e:
         return err(500, "server_error", e)
@@ -342,22 +401,20 @@ def bg_swap():
             return err(501, "bg_swap_not_configured",
                        "Set BG_COMPOSE_MODEL/BG_COMPOSE_VERSION.")
 
-        # 1) Subject cutout
-        rm_ref = f"{BG_REMOVE_MODEL}:{BG_REMOVE_VERSION}" if BG_REMOVE_VERSION else BG_REMOVE_MODEL
-        cut = replicate.run(rm_ref, input={
-            "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64)
-        })
+        # 1) Subject cutout (resize first)
+        rm_ref = model_ref(BG_REMOVE_MODEL, BG_REMOVE_VERSION)
+        cut = replicate.run(rm_ref, input={"image": resize_data_url(img_b64, max_side=768)})
         cut_urls = str_urls(cut)
         require(cut_urls, "background removal output")
 
         # 2) Generate new background
-        bg_ref = f"{BG_COMPOSE_MODEL}:{BG_COMPOSE_VERSION}" if BG_COMPOSE_VERSION else BG_COMPOSE_MODEL
+        bg_ref = model_ref(BG_COMPOSE_MODEL, BG_COMPOSE_VERSION)
         bg = replicate.run(bg_ref, input={"prompt": prompt, "width": 1024, "height": 1024})
         bg_urls = str_urls(bg)
         require(bg_urls, "background compose output")
 
         return jsonify({"ok": True, "subject_png": cut_urls[:1], "background": bg_urls[:1]})
-    except replicate.exceptions.ReplicateError as e:
+    except ReplicateError as e:
         return err(422, "replicate_error", e)
     except Exception as e:
         return err(500, "server_error", e)
