@@ -95,6 +95,25 @@ def str_urls(rep_result):
     except Exception:
         return [repr(rep_result)]
 
+@app.get("/_debug-models")
+def debug_models():
+    def ref(model, version):
+        return f"{model}:{version}" if version else model
+    return jsonify({
+        "replicate_token_set": bool(os.getenv("REPLICATE_API_TOKEN")),
+        "IMG_REPIX_MODEL": IMG_REPIX_MODEL,
+        "IMG_REPIX_VERSION": IMG_REPIX_VERSION,
+        "IMG_REPIX_model_ref": ref(IMG_REPIX_MODEL, IMG_REPIX_VERSION),
+        "IMG_INPAINT_MODEL": IMG_INPAINT_MODEL,
+        "IMG_INPAINT_VERSION": IMG_INPAINT_VERSION,
+        "FACE_LOCK_MODEL": FACE_LOCK_MODEL,
+        "FACE_LOCK_VERSION": FACE_LOCK_VERSION,
+        "BG_REMOVE_MODEL": BG_REMOVE_MODEL,
+        "BG_REMOVE_VERSION": BG_REMOVE_VERSION,
+        "BG_COMPOSE_MODEL": BG_COMPOSE_MODEL,
+        "BG_COMPOSE_VERSION": BG_COMPOSE_VERSION,
+    })
+
 # ===== Routes =====
 @app.get("/health")
 def health():
