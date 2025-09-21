@@ -1,17 +1,17 @@
-# api.py — Droxion backend (ChatGPT-quality chat + identity-safe image tools)
+# api.py — Droxion backend (Chat + Identity-safe Image Tools)
 # - /chat: GPT-4o → Claude 3.5 Sonnet → Gemini 1.5 Pro (auto-fallbacks)
-# - /remix-image: style remix (keeps structure) via Instruct-Pix2Pix
+# - /remix-image: style remix (fixed: image_guidance_scale >= 1)
 # - /inpaint-image: mask edits (white=change, black=keep)
-# - /remix-face-locked: ID-locked remix (same face) via InstantID/IP-Adapter-style model
+# - /remix-face-locked: identity-preserving remix (InstantID/IP-Adapter style)
 # - /bg-swap: optional subject cutout + generated background (returns both URLs)
-# - All Replicate outputs are strings/URLs (fixes JSON serialization errors)
-# - CORS enabled; helpful errors
+# - Replicate outputs are always URLs (no JSON serialization errors)
+# - CORS + helpful JSON errors + /health route
 
 import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# === Providers (install listed in requirements.txt) ===
+# ---- Providers (install in requirements.txt) ----
 # openai>=1.0.0 anthropic google-generativeai replicate
 from openai import OpenAI
 import anthropic
@@ -25,17 +25,17 @@ CORS(app)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-# REPLICATE_API_TOKEN must be set for the replicate SDK to work
+# REPLICATE_API_TOKEN must be set for the replicate SDK to work.
 
 # Image models (put latest version hashes in *_VERSION to avoid 422)
-IMG_REPIX_MODEL   = os.getenv("IMG_REPIX_MODEL", "timbrooks/instruct-pix2pix")
-IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")  # paste latest hash from model page
+IMG_REPIX_MODEL   = os.getenv("IMG_REPIX_MODEL", "timothybrooks/instruct-pix2pix")
+IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")  # paste latest hash
 
 IMG_INPAINT_MODEL   = os.getenv("IMG_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
 IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")  # paste latest hash
 
 # Face lock (identity-preserving). Optional but recommended.
-FACE_LOCK_MODEL   = os.getenv("FACE_LOCK_MODEL", "")        # e.g. "tencentarc/instantid"
+FACE_LOCK_MODEL   = os.getenv("FACE_LOCK_MODEL", "")        # e.g. "tencentarc/instantid" or "zsxkib/instant-id"
 FACE_LOCK_VERSION = os.getenv("FACE_LOCK_VERSION", "")
 
 # Face restore (sharpen only; no identity change). Optional.
@@ -179,26 +179,30 @@ def chat():
     except Exception as e:
         return err(500, "server_error", e)
 
-# ---- IMAGE: REMIX (style remix, keeps structure) ----
+# ---- IMAGE: REMIX (style remix; FIXED validation) ----
 @app.post("/remix-image")
 def remix_image():
     try:
         data = request.get_json(force=True, silent=True) or {}
         img_b64 = data.get("image_base64")
         prompt = data.get("prompt", "")
-        style_strength = float(data.get("style_strength", 0.5))  # 0..1
-        # Tip: 0.35–0.55 preserves identity well
+        style_strength = float(data.get("style_strength", 0.5))  # slider 0..1
 
         require(img_b64, "image_base64")
         require(prompt, "prompt")
 
         model_ref = f"{IMG_REPIX_MODEL}:{IMG_REPIX_VERSION}" if IMG_REPIX_VERSION else IMG_REPIX_MODEL
+
+        # FIX: Replicate now requires image_guidance_scale >= 1.
+        # Map slider [0..1] -> [1..3] (good range for remix without identity drift).
+        image_guidance_scale = max(1.0, min(3.0, style_strength * 3.0))
+
         out = replicate.run(model_ref, input={
             "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
             "prompt": prompt,
             "num_outputs": 1,
             "guidance_scale": 7.5,
-            "image_guidance_scale": max(0.0, min(style_strength, 1.0))
+            "image_guidance_scale": image_guidance_scale
         })
         urls = str_urls(out)
         if not urls:
@@ -264,7 +268,7 @@ def remix_face_locked():
         model_ref = f"{FACE_LOCK_MODEL}:{FACE_LOCK_VERSION}" if FACE_LOCK_VERSION else FACE_LOCK_MODEL
 
         gen = replicate.run(model_ref, input={
-            # keys vary by repo; these are commonly accepted or ignored harmlessly
+            # keys vary across repos; these are commonly accepted or ignored harmlessly
             "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
             "id_image": id_b64 if b64_is_data_url(id_b64) else str(id_b64),
             "prompt": prompt,
@@ -281,8 +285,7 @@ def remix_face_locked():
             fr_ref = f"{FACE_RESTORE_MODEL}:{FACE_RESTORE_VERSION}" if FACE_RESTORE_VERSION else FACE_RESTORE_MODEL
             fr = replicate.run(fr_ref, input={
                 "image": out_url,
-                # typical param for CodeFormer-like models
-                "fidelity": 0.7
+                "fidelity": 0.7  # typical CodeFormer knob
             })
             fr_urls = str_urls(fr)
             if fr_urls:
