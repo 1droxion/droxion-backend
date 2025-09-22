@@ -1,7 +1,9 @@
-# api.py — Droxion backend (chat + image tools)
-# Fixes: Replicate 422 ("image_guidance_scale must be >= 1") + gentler defaults for OOM
+# api.py — Droxion backend (chat + image tools; CPU-first image gen)
+# New: LOCAL_CPU_IMG=1 will use Diffusers on CPU (fast + safe defaults).
+# Fallback: if LOCAL_CPU_IMG!=1, we use Replicate exactly as before.
 
-import os
+import os, io, base64
+from typing import Tuple
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -11,6 +13,17 @@ import anthropic
 import google.generativeai as genai
 import replicate
 
+# ---------- Optional CPU pipelines ----------
+USE_LOCAL_CPU = os.getenv("LOCAL_CPU_IMG", "0") == "1"
+if USE_LOCAL_CPU:
+    import torch
+    from PIL import Image, ImageOps
+    from diffusers import (
+        StableDiffusionInstructPix2PixPipeline,
+        StableDiffusionInpaintPipeline,
+    )
+    torch.set_num_threads(int(os.getenv("TORCH_NUM_THREADS", "8")))  # tune per instance
+
 app = Flask(__name__)
 CORS(app)
 
@@ -19,14 +32,12 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 
-# Image models
+# Image models (names kept for Replicate path)
 IMG_REPIX_MODEL   = os.getenv("IMG_REPIX_MODEL", "timbrooks/instruct-pix2pix")
-IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")  # paste latest version hash if you have it
-
+IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")
 IMG_INPAINT_MODEL   = os.getenv("IMG_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
 IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")
 
-# Optional background pipeline
 BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")
 BG_REMOVE_VERSION = os.getenv("BG_REMOVE_VERSION", "")
 BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")
@@ -59,8 +70,27 @@ def require(val, name):
 def b64_is_data_url(s: str) -> bool:
     return isinstance(s, str) and s.strip().startswith("data:image/")
 
+def decode_image_b64(s: str) -> Image.Image:
+    """Accepts data URL or plain base64 or URL (which we just pass through to Replicate)."""
+    if not b64_is_data_url(s):
+        # plain base64?
+        try:
+            raw = base64.b64decode(s, validate=True)
+            return Image.open(io.BytesIO(raw)).convert("RGB")
+        except Exception:
+            raise ValueError("image_base64 must be a data URL or raw base64 when using LOCAL_CPU_IMG=1")
+    header, b64 = s.split(",", 1)
+    raw = base64.b64decode(b64)
+    return Image.open(io.BytesIO(raw)).convert("RGB")
+
+def decode_mask_b64(s: str) -> Image.Image:
+    m = decode_image_b64(s)
+    # Expect white=edit, black=keep → convert to 1-channel mask as required by diffusers
+    if m.mode != "L":
+        m = ImageOps.grayscale(m)
+    return m
+
 def str_urls(rep_result):
-    """Normalize Replicate outputs to list[str] of URLs."""
     if rep_result is None:
         return []
     if isinstance(rep_result, list):
@@ -77,18 +107,45 @@ def str_urls(rep_result):
         return [repr(rep_result)]
 
 def clamp(v, lo, hi):
-    try:
-        v = float(v)
-    except Exception:
-        v = lo
+    try: v = float(v)
+    except Exception: v = lo
     return max(lo, min(hi, v))
 
 def map_style_strength_to_img_guidance(style_strength_0_1: float) -> float:
-    """
-    UI slider is 0..1; Replicate's instruct-pix2pix expects image_guidance_scale >= 1.
-    Map 0..1 -> 1..6 (nice middle range), then clamp again for safety.
-    """
     return clamp(1.0 + float(style_strength_0_1) * 5.0, 1.0, 20.0)
+
+def pil_to_data_url(img: Image.Image, fmt="PNG") -> str:
+    buf = io.BytesIO()
+    img.save(buf, format=fmt)
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/{fmt.lower()};base64,{b64}"
+
+# ===== Lazy-load CPU pipelines =====
+_cpu_pix2pix = None
+_cpu_inpaint = None
+
+def get_cpu_pix2pix():
+    global _cpu_pix2pix
+    if _cpu_pix2pix is None:
+        # light, CPU-friendly defaults
+        model_id = os.getenv("LOCAL_CPU_PIX2PIX_ID", "timbrooks/instruct-pix2pix")
+        _cpu_pix2pix = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+            model_id, safety_checker=None
+        )
+        _cpu_pix2pix = _cpu_pix2pix.to("cpu")
+        _cpu_pix2pix.enable_attention_slicing()
+    return _cpu_pix2pix
+
+def get_cpu_inpaint():
+    global _cpu_inpaint
+    if _cpu_inpaint is None:
+        model_id = os.getenv("LOCAL_CPU_INPAINT_ID", "runwayml/stable-diffusion-inpainting")
+        _cpu_inpaint = StableDiffusionInpaintPipeline.from_pretrained(
+            model_id, safety_checker=None
+        )
+        _cpu_inpaint = _cpu_inpaint.to("cpu")
+        _cpu_inpaint.enable_attention_slicing()
+    return _cpu_inpaint
 
 # ===== Routes =====
 @app.get("/health")
@@ -100,10 +157,14 @@ def health():
             "openai": bool(OPENAI_API_KEY),
             "anthropic": bool(ANTHROPIC_API_KEY),
             "gemini": bool(GOOGLE_API_KEY),
+        },
+        "images": {
+            "local_cpu": USE_LOCAL_CPU,
+            "replicate": True
         }
     })
 
-# ---- CHAT (optional; unchanged logic) ----
+# ---- CHAT (unchanged logic) ----
 @app.post("/chat")
 def chat():
     try:
@@ -116,7 +177,7 @@ def chat():
         if not messages_in:
             return err(400, "messages or prompt required")
 
-        # 1) OpenAI
+        # OpenAI
         try:
             oc = get_openai()
             if oc:
@@ -129,7 +190,7 @@ def chat():
         except Exception:
             pass
 
-        # 2) Anthropic
+        # Anthropic
         try:
             ac = get_anthropic()
             if ac:
@@ -153,7 +214,7 @@ def chat():
         except Exception:
             pass
 
-        # 3) Gemini
+        # Gemini
         try:
             g = get_gemini()
             if g:
@@ -176,33 +237,44 @@ def remix_image():
         img_b64 = data.get("image_base64")
         prompt = (data.get("prompt") or "").strip()
         ui_strength = clamp(data.get("style_strength", 0.6), 0.0, 1.0)
-
         require(img_b64, "image_base64")
         require(prompt, "prompt")
 
-        # Map UI slider (0..1) -> valid Replicate range (>=1)
+        if USE_LOCAL_CPU:
+            image = decode_image_b64(img_b64)
+            # CPU-friendly: work at 512 and let frontend upscale if needed
+            image = ImageOps.contain(image, (512, 512))
+            image_guidance_scale = map_style_strength_to_img_guidance(ui_strength)
+
+            pipe = get_cpu_pix2pix()
+            with torch.inference_mode():
+                out = pipe(
+                    prompt=prompt,
+                    image=image,
+                    guidance_scale=7.5,
+                    image_guidance_scale=float(image_guidance_scale),
+                    num_inference_steps=int(os.getenv("LOCAL_STEPS", "20")),
+                ).images[0]
+            return jsonify({"ok": True, "images": [pil_to_data_url(out)]})
+
+        # ---- Replicate fallback (unchanged) ----
         image_guidance_scale = map_style_strength_to_img_guidance(ui_strength)
-
         model_ref = f"{IMG_REPIX_MODEL}:{IMG_REPIX_VERSION}" if IMG_REPIX_VERSION else IMG_REPIX_MODEL
-
-        # Gentler defaults to reduce OOM on Replicate
         input_payload = {
             "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
             "prompt": prompt,
             "num_outputs": 1,
-            # model-agnostic sensible ranges:
-            "guidance_scale": 7.5,           # text adherence
-            "image_guidance_scale": image_guidance_scale,  # structure adherence (>=1)
-            "num_inference_steps": 28        # keep under ~30 to avoid OOM spikes
+            "guidance_scale": 7.5,
+            "image_guidance_scale": image_guidance_scale,
+            "num_inference_steps": 28
         }
-
         out = replicate.run(model_ref, input=input_payload)
         urls = str_urls(out)
         if not urls:
             return err(502, "no image returned from replicate")
         return jsonify({"ok": True, "images": urls})
+
     except replicate.exceptions.ReplicateError as e:
-        # Surface model’s validation detail to client
         return err(422, "replicate_error", e)
     except Exception as e:
         return err(500, "server_error", e)
@@ -215,13 +287,29 @@ def inpaint_image():
         img_b64 = data.get("image_base64")
         mask_b64 = data.get("mask_base64")
         prompt = (data.get("prompt") or "").strip()
-
         require(img_b64, "image_base64")
         require(mask_b64, "mask_base64")
         require(prompt, "prompt")
 
-        model_ref = f"{IMG_INPAINT_MODEL}:{IMG_INPAINT_VERSION}" if IMG_INPAINT_VERSION else IMG_INPAINT_MODEL
+        if USE_LOCAL_CPU:
+            image = decode_image_b64(img_b64)
+            mask = decode_mask_b64(mask_b64)
+            image = ImageOps.contain(image, (512, 512))
+            mask = mask.resize(image.size, Image.NEAREST)
 
+            pipe = get_cpu_inpaint()
+            with torch.inference_mode():
+                out = pipe(
+                    prompt=prompt,
+                    image=image,
+                    mask_image=mask,
+                    guidance_scale=7.5,
+                    num_inference_steps=int(os.getenv("LOCAL_STEPS", "20")),
+                ).images[0]
+            return jsonify({"ok": True, "images": [pil_to_data_url(out)]})
+
+        # ---- Replicate fallback (unchanged) ----
+        model_ref = f"{IMG_INPAINT_MODEL}:{IMG_INPAINT_VERSION}" if IMG_INPAINT_VERSION else IMG_INPAINT_MODEL
         out = replicate.run(model_ref, input={
             "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64),
             "mask": mask_b64 if b64_is_data_url(mask_b64) else str(mask_b64),
@@ -231,19 +319,19 @@ def inpaint_image():
         if not urls:
             return err(502, "no image returned from replicate")
         return jsonify({"ok": True, "images": urls})
+
     except replicate.exceptions.ReplicateError as e:
         return err(422, "replicate_error", e)
     except Exception as e:
         return err(500, "server_error", e)
 
-# ---- IMAGE: BACKGROUND SWAP (subject cutout + generated BG) ----
+# ---- IMAGE: BACKGROUND SWAP (still via Replicate unless you add a CPU cutout) ----
 @app.post("/bg-swap")
 def bg_swap():
     try:
         data = request.get_json(force=True, silent=True) or {}
         img_b64 = data.get("image_base64")
         prompt = (data.get("prompt") or "").strip()
-
         require(img_b64, "image_base64")
         require(prompt, "prompt")
 
@@ -254,7 +342,6 @@ def bg_swap():
             return err(501, "bg_swap_not_configured",
                        "Set BG_COMPOSE_MODEL/BG_COMPOSE_VERSION.")
 
-        # 1) Subject cutout
         rm_ref = f"{BG_REMOVE_MODEL}:{BG_REMOVE_VERSION}" if BG_REMOVE_VERSION else BG_REMOVE_MODEL
         cut = replicate.run(rm_ref, input={
             "image": img_b64 if b64_is_data_url(img_b64) else str(img_b64)
@@ -262,12 +349,9 @@ def bg_swap():
         cut_urls = str_urls(cut)
         require(cut_urls, "background removal output")
 
-        # 2) Generate new background (square is safe)
         bg_ref = f"{BG_COMPOSE_MODEL}:{BG_COMPOSE_VERSION}" if BG_COMPOSE_VERSION else BG_COMPOSE_MODEL
         bg = replicate.run(bg_ref, input={
-            "prompt": prompt,
-            "width": 1024,
-            "height": 1024
+            "prompt": prompt, "width": 1024, "height": 1024
         })
         bg_urls = str_urls(bg)
         require(bg_urls, "background compose output")
