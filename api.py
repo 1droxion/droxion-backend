@@ -1,10 +1,10 @@
-# api.py — Droxion backend (chat + image tools)
-# Updates in this version:
-# - NEW: /generate-image for prompt → image (text-to-image) via Replicate (FLUX.1)
-# - Env toggles for text2img model/version + safe knobs (width/height/steps/guidance)
-# - Uses existing helpers & error shape ({"ok": True, "images": [...]})
+# api.py — Droxion backend (chat + image tools, prompt→image fixed)
+# Changes:
+# - ✅ /generate-image (text→image) using correct Replicate slug: black-forest-labs/flux-1-schnell
+# - ✅ Extra logging for Replicate model+version and HTTP details
+# - Keeps: /remix-image, /inpaint-image, /bg-swap, /chat, /health
 
-import os, io, base64
+import os, io, base64, json
 from typing import List, Tuple
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -25,32 +25,34 @@ CORS(app)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
 
 # Modes & knobs
 USE_LOCAL_CPU = os.getenv("LOCAL_CPU_IMG", "0") == "1"     # 1 → Diffusers CPU; 0 → Replicate
 PRELOAD_CPU   = os.getenv("PRELOAD_CPU", "0") == "1"       # optional: preload CPU models
-MAX_IMAGE_SIZE = int(os.getenv("MAX_IMAGE_SIZE", "768"))   # <— bumped from 512 to 768
+MAX_IMAGE_SIZE = int(os.getenv("MAX_IMAGE_SIZE", "768"))   # <— 768 is a safe clarity/speed balance
 SAFE_STEPS     = int(os.getenv("LOCAL_STEPS", "20"))       # safe 16–24
 TORCH_THREADS  = int(os.getenv("TORCH_NUM_THREADS", "4"))
 FEATHER_RADIUS = int(os.getenv("FEATHER_RADIUS", "6"))     # bg-swap edge softening (px)
+LOG_REPLICATE  = os.getenv("LOG_REPLICATE", "1") == "1"    # print model + payload keys
 
-# Replicate models (existing)
-IMG_REPIX_MODEL   = os.getenv("IMG_REPIX_MODEL", "timbrooks/instruct-pix2pix")
-IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")
+# Replicate models (edit/inpaint)
+IMG_REPIX_MODEL     = os.getenv("IMG_REPIX_MODEL", "timbrooks/instruct-pix2pix")
+IMG_REPIX_VERSION   = os.getenv("IMG_REPIX_VERSION", "")
 IMG_INPAINT_MODEL   = os.getenv("IMG_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
 IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")
 
-# NEW: Replicate text-to-image model
-# Fast:  "black-forest-labs/FLUX.1-schnell"
-# Quality: "black-forest-labs/FLUX.1-dev"
-TEXT2IMG_MODEL   = os.getenv("TEXT2IMG_MODEL", "black-forest-labs/FLUX.1-schnell")
+# ✅ Replicate text-to-image model (fixed slug, all lowercase with dashes)
+# Fast:    black-forest-labs/flux-1-schnell
+# Quality: black-forest-labs/flux-1-dev
+TEXT2IMG_MODEL   = os.getenv("TEXT2IMG_MODEL", "black-forest-labs/flux-1-schnell")
 TEXT2IMG_VERSION = os.getenv("TEXT2IMG_VERSION", "")  # optional pin
 
 # Optional background pipeline (Replicate)
 BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")
 BG_REMOVE_VERSION = os.getenv("BG_REMOVE_VERSION", "")
-BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")
-BG_COMPOSE_VERSION = os.getenv("BG_COMPOSE_VERSION", "")
+BG_COMPOSE_MODEL  = os.getenv("BG_COMPOSE_MODEL", "")
+BG_COMPOSE_VERSION= os.getenv("BG_COMPOSE_VERSION", "")
 
 # ===== Clients =====
 def get_openai():
@@ -151,6 +153,14 @@ def feather_alpha(rgba: Image.Image, radius: int) -> Image.Image:
     a = a.filter(ImageFilter.GaussianBlur(radius=max(1, radius)))
     return Image.merge("RGBA", (r, g, b, a))
 
+def log_replicate_call(model_ref: str, payload: dict):
+    if not LOG_REPLICATE:
+        return
+    keys_only = {k: ("<...>" if isinstance(v, (bytes, bytearray, str)) and len(str(v)) > 120 else v)
+                 for k, v in payload.items()}
+    print(f"[replicate] model={model_ref} input_keys={list(payload.keys())}")
+    print(f"[replicate] input_preview={json.dumps(keys_only)[:800]}")
+
 # ===== Local CPU (Diffusers) optional =====
 _cpu_ready = False
 if USE_LOCAL_CPU:
@@ -204,10 +214,11 @@ def health():
         },
         "images": {
             "local_cpu": USE_LOCAL_CPU and _cpu_ready,
-            "replicate": True,
+            "replicate": bool(REPLICATE_API_TOKEN),
             "max_image_size": MAX_IMAGE_SIZE,
             "safe_steps": SAFE_STEPS,
             "text2img_model": TEXT2IMG_MODEL,
+            "text2img_version": TEXT2IMG_VERSION or "(latest)"
         }
     })
 
@@ -268,22 +279,24 @@ def chat():
     except Exception as e:
         return err(500, "server_error", e)
 
-# ---- IMAGE: TEXT2IMG (NEW) ----
+# ---- IMAGE: TEXT2IMG (Prompt → Image) ----
 @app.post("/generate-image")
 def generate_image():
     """
     JSON body:
       - prompt (str, required)
       - negative_prompt (str, optional)
-      - width (int, optional, default 1024)
-      - height (int, optional, default 1024)
-      - steps (int, optional, default SAFE_STEPS, clamped 8..40)
-      - guidance (float, optional, default 4.0, clamped 1..12)
-      - num_outputs (int, optional, default 1, max 4)
+      - width (int, default 1024)  - clamped 256..1536
+      - height (int, default 1024) - clamped 256..1536
+      - steps (int, default SAFE_STEPS) - clamped 8..40
+      - guidance (float, default 4.0)   - clamped 1..12
+      - num_outputs (int, default 1, max 4)
       - seed (int, optional)
-    Returns: {"ok": True, "mode": "text2img", "images": [url,...]}
     """
     try:
+        if not REPLICATE_API_TOKEN:
+            return err(500, "replicate_token_missing", "Set REPLICATE_API_TOKEN in environment")
+
         data = request.get_json(force=True, silent=True) or {}
         prompt = (data.get("prompt") or "").strip()
         require(prompt, "prompt")
@@ -296,11 +309,8 @@ def generate_image():
         num_outputs = int(clamp(data.get("num_outputs", 1), 1, 4))
         seed = data.get("seed", None)
 
-        # Replicate model ref
         model_ref = f"{TEXT2IMG_MODEL}:{TEXT2IMG_VERSION}" if TEXT2IMG_VERSION else TEXT2IMG_MODEL
 
-        # Some FLUX builds accept these exact keys; others accept very similar names.
-        # Replicate will ignore unknowns gracefully.
         input_payload = {
             "prompt": prompt,
             "negative_prompt": negative or None,
@@ -313,14 +323,15 @@ def generate_image():
         if seed is not None:
             input_payload["seed"] = int(seed)
 
+        log_replicate_call(model_ref, input_payload)
         out = replicate.run(model_ref, input=input_payload)
         urls = str_urls(out)
         if not urls:
-            return err(502, "no image returned from replicate")
-
+            return err(502, "no_image_returned", f"model={model_ref}")
         return jsonify({"ok": True, "mode": "text2img", "images": urls})
     except replicate.exceptions.ReplicateError as e:
-        return err(422, "replicate_error", e)
+        # Typical 404/401/422 info
+        return err(422, "replicate_error", f"{e}")
     except Exception as e:
         return err(500, "server_error", e)
 
@@ -357,7 +368,6 @@ def remix_image():
                 ).images[0]
             return jsonify({"ok": True, "images": [pil_to_data_url(out)]})
 
-        # Replicate path — send 768px PNG data URL
         model_ref = f"{IMG_REPIX_MODEL}:{IMG_REPIX_VERSION}" if IMG_REPIX_VERSION else IMG_REPIX_MODEL
         input_payload = {
             "image": pil_to_data_url(img),
@@ -367,6 +377,7 @@ def remix_image():
             "image_guidance_scale": float(image_guidance_scale),
             "num_inference_steps": int(steps)
         }
+        log_replicate_call(model_ref, {"image": "<dataurl>", **{k:v for k,v in input_payload.items() if k!="image"}})
         out = replicate.run(model_ref, input=input_payload)
         urls = str_urls(out)
         if not urls:
@@ -416,6 +427,7 @@ def inpaint_image():
             "mask": pil_to_data_url(mask.convert("RGB")),
             "prompt": prompt
         }
+        log_replicate_call(model_ref, {"image":"<dataurl>","mask":"<dataurl>","prompt":prompt})
         out = replicate.run(model_ref, input=input_payload)
         urls = str_urls(out)
         if not urls:
@@ -449,6 +461,7 @@ def bg_swap():
 
         # 1) Subject cutout (PNG w/ alpha)
         rm_ref = f"{BG_REMOVE_MODEL}:{BG_REMOVE_VERSION}" if BG_REMOVE_VERSION else BG_REMOVE_MODEL
+        log_replicate_call(rm_ref, {"image":"<dataurl>"})
         cut = replicate.run(rm_ref, input={"image": pil_to_data_url(src)})
         cut_urls = str_urls(cut)
         require(cut_urls, "background removal output")
@@ -464,7 +477,6 @@ def bg_swap():
 
         # 3) Composite (center)
         canvas = bg_img.copy()
-        # scale subject to fit nicely (no larger than 85% of bg)
         max_w = int(canvas.width * 0.85)
         max_h = int(canvas.height * 0.85)
         subject_scaled = ImageOps.contain(subject_rgba, (max_w, max_h))
@@ -485,4 +497,7 @@ def bg_swap():
 
 # ---- main ----
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    port = int(os.getenv("PORT", 8000))
+    print(f"🚀 Droxion api up on :{port}")
+    print(f"→ TEXT2IMG_MODEL={TEXT2IMG_MODEL}  TEXT2IMG_VERSION={TEXT2IMG_VERSION or '(latest)'}")
+    app.run(host="0.0.0.0", port=port)
