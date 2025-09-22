@@ -1,9 +1,8 @@
 # api.py — Droxion backend (chat + image tools)
-# Updates:
-# - MAX_IMAGE_SIZE default 768 (cleaner than 512, still safe for Replicate)
-# - Safe steps/guidance
-# - Always resize before inference (CPU or Replicate)
-# - Background swap: optional feather + server-side composite (returns 'composited')
+# Updates in this version:
+# - NEW: /generate-image for prompt → image (text-to-image) via Replicate (FLUX.1)
+# - Env toggles for text2img model/version + safe knobs (width/height/steps/guidance)
+# - Uses existing helpers & error shape ({"ok": True, "images": [...]})
 
 import os, io, base64
 from typing import List, Tuple
@@ -35,11 +34,17 @@ SAFE_STEPS     = int(os.getenv("LOCAL_STEPS", "20"))       # safe 16–24
 TORCH_THREADS  = int(os.getenv("TORCH_NUM_THREADS", "4"))
 FEATHER_RADIUS = int(os.getenv("FEATHER_RADIUS", "6"))     # bg-swap edge softening (px)
 
-# Replicate models
+# Replicate models (existing)
 IMG_REPIX_MODEL   = os.getenv("IMG_REPIX_MODEL", "timbrooks/instruct-pix2pix")
 IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")
 IMG_INPAINT_MODEL   = os.getenv("IMG_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
 IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")
+
+# NEW: Replicate text-to-image model
+# Fast:  "black-forest-labs/FLUX.1-schnell"
+# Quality: "black-forest-labs/FLUX.1-dev"
+TEXT2IMG_MODEL   = os.getenv("TEXT2IMG_MODEL", "black-forest-labs/FLUX.1-schnell")
+TEXT2IMG_VERSION = os.getenv("TEXT2IMG_VERSION", "")  # optional pin
 
 # Optional background pipeline (Replicate)
 BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")
@@ -201,7 +206,8 @@ def health():
             "local_cpu": USE_LOCAL_CPU and _cpu_ready,
             "replicate": True,
             "max_image_size": MAX_IMAGE_SIZE,
-            "safe_steps": SAFE_STEPS
+            "safe_steps": SAFE_STEPS,
+            "text2img_model": TEXT2IMG_MODEL,
         }
     })
 
@@ -259,6 +265,62 @@ def chat():
             pass
 
         return err(502, "all providers failed (OpenAI → Anthropic → Gemini)")
+    except Exception as e:
+        return err(500, "server_error", e)
+
+# ---- IMAGE: TEXT2IMG (NEW) ----
+@app.post("/generate-image")
+def generate_image():
+    """
+    JSON body:
+      - prompt (str, required)
+      - negative_prompt (str, optional)
+      - width (int, optional, default 1024)
+      - height (int, optional, default 1024)
+      - steps (int, optional, default SAFE_STEPS, clamped 8..40)
+      - guidance (float, optional, default 4.0, clamped 1..12)
+      - num_outputs (int, optional, default 1, max 4)
+      - seed (int, optional)
+    Returns: {"ok": True, "mode": "text2img", "images": [url,...]}
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        prompt = (data.get("prompt") or "").strip()
+        require(prompt, "prompt")
+
+        negative = (data.get("negative_prompt") or "").strip()
+        width  = int(clamp(data.get("width",  1024), 256, 1536))
+        height = int(clamp(data.get("height", 1024), 256, 1536))
+        steps  = int(clamp(data.get("steps",  SAFE_STEPS), 8, 40))
+        guidance = float(clamp(data.get("guidance", 4.0), 1.0, 12.0))
+        num_outputs = int(clamp(data.get("num_outputs", 1), 1, 4))
+        seed = data.get("seed", None)
+
+        # Replicate model ref
+        model_ref = f"{TEXT2IMG_MODEL}:{TEXT2IMG_VERSION}" if TEXT2IMG_VERSION else TEXT2IMG_MODEL
+
+        # Some FLUX builds accept these exact keys; others accept very similar names.
+        # Replicate will ignore unknowns gracefully.
+        input_payload = {
+            "prompt": prompt,
+            "negative_prompt": negative or None,
+            "width": width,
+            "height": height,
+            "num_inference_steps": steps,
+            "guidance": guidance,
+            "num_outputs": num_outputs,
+        }
+        if seed is not None:
+            input_payload["seed"] = int(seed)
+
+        out = replicate.run(model_ref, input=input_payload)
+        urls = str_urls(out)
+        if not urls:
+            return err(502, "no image returned from replicate")
+
+        return jsonify({"ok": True, "mode": "text2img", "images": urls})
+    except replicate.exceptions.ReplicateError as e:
+        return err(422, "replicate_error", e)
     except Exception as e:
         return err(500, "server_error", e)
 
