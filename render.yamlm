@@ -1,27 +1,90 @@
 services:
-  # FRONTEND: Next.js (SSR) on Render
+  # ===========================
+  # FRONTEND — Next.js (SSR)
+  # ===========================
   - type: web
     name: droxion-frontend
     env: node
     plan: free
     region: oregon
-    rootDir: .                # change to your subfolder if not root
-    buildCommand: npm ci && npm run build
-    startCommand: npm run start
+    rootDir: .                      # ⬅ change if your Next app is in a subfolder
     runtime: node
     nodeVersion: 20
     autoDeploy: true
+    buildCommand: |
+      npm ci
+      npm run build
+    startCommand: npm run start
     healthCheckPath: /
-
     envVars:
+      # Point frontend to your backend base URL
       - key: NEXT_PUBLIC_API_BASE
         value: https://droxion-backend.onrender.com
+      # Optional: silence Next telemetry
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
 
-  # (Optional) BACKEND already on Render; if you want to manage it in the same repo, add it here:
-  # - type: web
-  #   name: droxion-backend
-  #   env: python
-  #   rootDir: backend          # folder containing your Flask app
-  #   buildCommand: pip install -r requirements.txt
-  #   startCommand: gunicorn -w 2 -k uvicorn.workers.UvicornWorker api:app
-  #   autoDeploy: true
+  # ===========================
+  # BACKEND — Flask (Gunicorn)
+  # ===========================
+  - type: web
+    name: droxion-backend
+    env: python
+    plan: free
+    region: oregon
+    rootDir: backend                # ⬅ set to '.' if api.py is in repo root
+    autoDeploy: true
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    # Gunicorn with 2 workers; bump if you need more concurrency
+    startCommand: gunicorn api:app --workers 2 --timeout 120
+    # Use Flask /health route from the api.py I gave you
+    healthCheckPath: /health
+    # (Optional) if your service takes a few seconds to warm up
+    healthCheckTimeoutSeconds: 120
+
+    envVars:
+      # ---- Model/API Providers (set these in Render dashboard or inline here) ----
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: YOUTUBE_API_KEY          # used by /youtube + /realtime (youtube intent)
+        sync: false
+      - key: REPLICATE_API_TOKEN      # for /remix-image, /inpaint-image, etc.
+        sync: false
+
+      # ---- Optional Replicate model selectors (safe to leave empty) ----
+      - key: IMG_REPIX_MODEL          # e.g. timbrooks/instruct-pix2pix
+        value: timbrooks/instruct-pix2pix
+      - key: IMG_REPIX_VERSION        # paste model version hash if you want to pin
+        value:
+      - key: IMG_INPAINT_MODEL        # e.g. stability-ai/stable-diffusion-inpainting
+        value: stability-ai/stable-diffusion-inpainting
+      - key: IMG_INPAINT_VERSION
+        value:
+      - key: FACE_LOCK_MODEL          # e.g. tencentarc/instantid
+        value:
+      - key: FACE_LOCK_VERSION
+        value:
+      - key: FACE_RESTORE_MODEL       # e.g. sczhou/codeformer
+        value:
+      - key: FACE_RESTORE_VERSION
+        value:
+      - key: BG_REMOVE_MODEL          # e.g. cjwbw/rembg
+        value:
+      - key: BG_REMOVE_VERSION
+        value:
+      - key: BG_COMPOSE_MODEL         # e.g. black-forest-labs/flux-schnell
+        value:
+      - key: BG_COMPOSE_VERSION
+        value:
+
+      # ---- App/Flask basics ----
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PORT                     # Render sets PORT, but we default it in api.py too
+        value: "10000"
