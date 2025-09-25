@@ -1,4 +1,3 @@
-
 # api.py — Droxion backend (ChatGPT-quality chat + identity-safe image tools)
 # - /chat: GPT-4o → Claude 3.5 Sonnet → Gemini 1.5 Pro (auto-fallbacks)
 # - /remix-image: style remix (keeps structure) via Instruct-Pix2Pix
