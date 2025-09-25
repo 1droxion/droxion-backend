@@ -1,29 +1,28 @@
-# api.py — Droxion backend (matches AIChat.jsx endpoints 1:1)
-# - /chat: GPT-4o → Claude 3.5 Sonnet → Gemini 1.5 Pro (auto-fallbacks)
-# - /realtime: news / weather / crypto / images (web cards)
-# - /suggest: typeahead + follow-ups
-# - /search: simple web results (Wikipedia-first) → cards
+# api.py — Droxion backend (full, drop-in)
+# Matches AIChat.jsx endpoints 1:1 and fixes previews:
+# - /chat: GPT-4o → Claude 3.5 Sonnet → Gemini 1.5 Pro (fallbacks)
+# - /realtime: news / weather / crypto / images / youtube (cards)
+# - /suggest: typeahead + followups
+# - /search: Wikipedia-first search → cards
 # - /deepsearch: lightweight multi-source summary + cards
-# - /analyze-image: image upload → (Vision if available) → description + gallery
-# - /img: image proxy (fixes mixed-content / CORS)
-# - Image tools kept (replicate): /remix-image, /inpaint-image, /remix-face-locked, /bg-swap
-# Notes:
-#   • All "cards" are arrays; nothing is trimmed server-side (frontend ranks/trims).
-#   • No external keys are strictly required; optional keys unlock better results.
-#   • Safe fallbacks (Unsplash, Open-Meteo, CoinGecko, Wikipedia) require no keys.
+# - /analyze-image: multipart image → (Vision if available) → gallery + description
+# - /youtube: explicit YouTube search → youtube cards
+# - /img: hardened image proxy (CORS, redirects, MIME)
+# - Image tools via Replicate: /remix-image, /inpaint-image, /remix-face-locked, /bg-swap
 
 import os, io, base64, mimetypes, time, json
 from urllib.parse import urlencode
 import requests
-from flask import Flask, request, jsonify, Response, send_file
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
-# ========= Optional AI providers =========
-# pip install openai anthropic google-generativeai replicate
-OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
-ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
-GOOGLE_API_KEY     = os.getenv("GOOGLE_API_KEY", "")
-REPLICATE_API_TOKEN= os.getenv("REPLICATE_API_TOKEN","")
+# ========= Optional AI / APIs =========
+# pip install: openai anthropic google-generativeai replicate
+OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
+ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
+GOOGLE_API_KEY      = os.getenv("GOOGLE_API_KEY", "")
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
+YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "")  # <-- add this on Render
 
 try:
     from openai import OpenAI
@@ -133,6 +132,11 @@ def gemini_client():
         return genai
     return None
 
+def make_card(**kw):
+    c = {"type":"web","title":"","url":"","image":None,"source":"","snippet":""}
+    c.update({k:v for k,v in kw.items() if v is not None})
+    return c
+
 # ========= Health =========
 @app.get("/health")
 def health():
@@ -144,6 +148,7 @@ def health():
             "gemini": bool(GOOGLE_API_KEY),
         },
         "replicate": bool(REPLICATE_API_TOKEN),
+        "youtube": bool(YOUTUBE_API_KEY),
     })
 
 # ========= CHAT (fallbacks) =========
@@ -151,7 +156,7 @@ def health():
 def chat():
     """
     Body: { "messages":[{role,content}], ... } OR { "prompt": "..." }
-    Returns: { ok, model, text|reply, cards?[] }
+    Returns: { ok, reply, model, cards:[] }
     """
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -162,7 +167,7 @@ def chat():
         if not msgs:
             return err(400, "messages or prompt required")
 
-        # 1) OpenAI (GPT-4o)
+        # 1) OpenAI GPT-4o
         try:
             oc = gpt_client()
             if oc:
@@ -213,18 +218,13 @@ def chat():
     except Exception as e:
         return err(500, "server_error", e)
 
-# ========= SUGGEST (typeahead + followups) =========
+# ========= Suggest (typeahead / followups) =========
 @app.get("/suggest")
 def suggest():
-    """
-    Query: ?q=... [&mode=followup]
-    Returns: { ok, suggestions: [] }
-    """
     q = (request.args.get("q") or "").strip()
     mode = (request.args.get("mode") or "").strip().lower()
     sugs = []
 
-    # DuckDuckGo suggestions (no key)
     if q:
         try:
             j = get_json("https://duckduckgo.com/ac/", params={"q": q})
@@ -233,7 +233,6 @@ def suggest():
         except Exception:
             sugs = []
 
-    # lightweight follow-ups
     if mode == "followup":
         base = [
             f"Explain {q} in simple steps",
@@ -243,18 +242,10 @@ def suggest():
         ]
         return ok({"suggestions": base[:8]})
 
-    return ok({"suggestions": sugs[:10]})
+    return ok({"suggestions": (sugs or [])[:10]})
 
-# ========= REALTIME (news / weather / crypto / images) =========
-def make_card(**kw):
-    # Uniform card creator (never None fields required by frontend)
-    c = {"type": "web", "title":"", "url":"", "image":None, "source":"", "snippet":""}
-    c.update({k:v for k,v in kw.items() if v is not None})
-    return c
-
+# ========= News / Weather / Crypto / Images / YouTube =========
 def news_cards(query):
-    # Google News RSS JSON via gnews no-key HTML? Use Google News RSS feed safely.
-    # Example feed: https://news.google.com/rss/search?q=bitcoin&hl=en-US&gl=US&ceid=US:en
     import xml.etree.ElementTree as ET
     q = query or "top news"
     url = "https://news.google.com/rss/search"
@@ -266,15 +257,13 @@ def news_cards(query):
         for item in root.findall(".//item")[:15]:
             title = (item.findtext("title") or "").strip()
             link = (item.findtext("link") or "").strip()
-            source = (item.findtext("{http://search.yahoo.com/mrss/}source") or "") or "news"
             pub = (item.findtext("pubDate") or "")
-            out.append(make_card(type="news", title=title, url=link, source=source, time=pub))
+            out.append(make_card(type="news", title=title, url=link, source="news", time=pub))
     except Exception:
         pass
     return out
 
 def geocode_city(name):
-    # Open-Meteo geocoding (no key)
     j = get_json("https://geocoding-api.open-meteo.com/v1/search", params={"name": name, "count": 1})
     if j and j.get("results"):
         r = j["results"][0]
@@ -282,11 +271,10 @@ def geocode_city(name):
     return None
 
 def weather_cards(query):
-    # Parse a simple city name out of query
-    city = query.replace("weather", "").strip() or "New York"
+    city = query.replace("weather","").strip() or "New York"
     geo = geocode_city(city)
     if not geo:
-        return [make_card(type="weather", title="Weather", subtitle=f"{city}", temp_c=None)]
+        return [make_card(type="weather", title="Weather", subtitle=f"{city}")]
     lat, lon = geo["lat"], geo["lon"]
     j = get_json("https://api.open-meteo.com/v1/forecast", params={
         "latitude": lat, "longitude": lon,
@@ -300,14 +288,13 @@ def weather_cards(query):
     cw = j.get("current_weather") or {}
     temp_c = cw.get("temperature")
     wind_kph = cw.get("windspeed")
-    # Build hourly / daily arrays into the shape your component expects
-    hours = []
+    hours=[]
     h_t = (j.get("hourly") or {}).get("time") or []
     h_temp = (j.get("hourly") or {}).get("temperature_2m") or []
     for t, tc in list(zip(h_t, h_temp))[:8]:
         hours.append({"time": t, "temp_c": tc})
 
-    daily = []
+    daily=[]
     d_tmax = (j.get("daily") or {}).get("temperature_2m_max") or []
     d_tmin = (j.get("daily") or {}).get("temperature_2m_min") or []
     for i in range(min(3, len(d_tmax), len(d_tmin))):
@@ -319,13 +306,11 @@ def weather_cards(query):
         "subtitle": f"{geo['name']}, {geo['country']}",
         "temp_c": temp_c, "feels_c": temp_c,
         "wind_kph": wind_kph, "humidity": None,
-        "hourly": hours, "daily": daily,
-        "icon": None
+        "hourly": hours, "daily": daily, "icon": None
     }
     return [card]
 
 def crypto_cards(query):
-    # CoinGecko (no key)
     coins = ["bitcoin","ethereum","solana"]
     res = get_json("https://api.coingecko.com/api/v3/coins/markets",
                    params={"vs_currency":"usd","ids":",".join(coins)})
@@ -336,24 +321,74 @@ def crypto_cards(query):
             url = f"https://www.coingecko.com/en/coins/{c.get('id')}"
             price = f"${c.get('current_price'):,}"
             ch = c.get("price_change_percentage_24h")
-            change = f"{ch:+.2f}%"
+            change = f"{(ch or 0):+,.2f}%"
             out.append({
                 "type":"crypto","title":title,"url":url,"price":price,"change":change,
-                "symbol": c.get("symbol","").upper(),
+                "symbol": (c.get("symbol") or "").upper(),
                 "image": c.get("image"), "source":"CoinGecko"
             })
     return out
 
 def image_cards(query):
-    # Build an images-grid using Unsplash source URLs (no key); frontend also has its own fallback
     q = (query or "wallpaper").replace("images:", "").strip() or "wallpaper"
     urls = [f"https://source.unsplash.com/600x400/?{requests.utils.quote(q)}&sig={i}" for i in range(1, 13)]
     return [{"type":"images-grid", "images": urls}]
 
+def yt_search(q, max_results=8):
+    if not (YOUTUBE_API_KEY and q):
+        return []
+    try:
+        j = get_json(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={
+                "key": YOUTUBE_API_KEY,
+                "part": "snippet",
+                "q": q,
+                "type": "video",
+                "maxResults": max_results,
+                "safeSearch": "moderate",
+            },
+        ) or {}
+        items = j.get("items") or []
+        cards = []
+        for it in items:
+            sid = it.get("id", {}).get("videoId")
+            sn  = it.get("snippet", {}) or {}
+            title = sn.get("title") or "YouTube"
+            url   = f"https://www.youtube.com/watch?v={sid}" if sid else ""
+            thumb = (sn.get("thumbnails", {}).get("medium")
+                     or sn.get("thumbnails", {}).get("high")
+                     or {}).get("url")
+            cards.append({
+                "type": "youtube",
+                "title": title,
+                "url": url,
+                "image": thumb,
+                "videoId": sid,
+                "source": "YouTube",
+                "snippet": sn.get("description") or "",
+                "publishedAt": sn.get("publishedAt"),
+            })
+        return cards
+    except Exception:
+        return []
+
+@app.post("/youtube")
+def youtube_search():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        q = (data.get("query") or data.get("q") or "").strip()
+        if not q:
+            return ok({"cards": []})
+        return ok({"cards": yt_search(q)})
+    except Exception as e:
+        return err(500, "server_error", e)
+
+# ========= REALTIME =========
 @app.post("/realtime")
 def realtime():
     """
-    Body: { query, intent?('news'|'weather'|'crypto'|'images'|...), web? }
+    Body: { query, intent?('news'|'weather'|'crypto'|'images'|'youtube'|...), web? }
     Returns: { ok, cards:[], markdown? }
     """
     try:
@@ -361,30 +396,28 @@ def realtime():
         q = (data.get("query") or "").strip()
         intent = (data.get("intent") or "").strip().lower()
 
-        cards=[]
-        md=None
+        cards=[]; md=None
         if intent == "news":
             cards = news_cards(q)
+            cards += yt_search(q)[:4]  # enrich news with related videos
             md = f"Top news for **{q or 'today'}**"
         elif intent == "weather":
-            cards = weather_cards(q)
-            md = f"Weather for **{q or 'your city'}**"
+            cards = weather_cards(q); md = f"Weather for **{q or 'your city'}**"
         elif intent == "crypto":
-            cards = crypto_cards(q)
-            md = "Crypto prices (CoinGecko)"
+            cards = crypto_cards(q); md = "Crypto prices (CoinGecko)"
         elif intent == "images":
-            cards = image_cards(q)
-            md = f"Images for **{q or 'wallpaper'}**"
+            cards = image_cards(q); md = f"Images for **{q or 'wallpaper'}**"
+        elif intent == "youtube":
+            cards = yt_search(q); md = f"YouTube results for **{q}**"
         else:
-            # generic: mix a little bit
-            cards = (news_cards(q)[:6] + crypto_cards(q)[:3])
+            cards = news_cards(q)[:6] + crypto_cards(q)[:3] + yt_search(q)[:2]
             md = f"Results for **{q}**"
 
         return ok({"cards": cards, "markdown": md})
     except Exception as e:
         return err(500, "server_error", e)
 
-# ========= SEARCH (Wikipedia-first simple cards) =========
+# ========= SEARCH (Wikipedia-first) =========
 @app.post("/search")
 def search():
     """
@@ -397,7 +430,6 @@ def search():
         if not prompt:
             return ok({"results":[]})
 
-        # Wikipedia search
         sj = get_json("https://en.wikipedia.org/w/api.php", params={
             "action":"query","list":"search","format":"json","srlimit":10,"srsearch": prompt
         }) or {}
@@ -405,24 +437,22 @@ def search():
         for it in (sj.get("query",{}).get("search") or []):
             title = it.get("title")
             page = f"https://en.wikipedia.org/wiki/{title.replace(' ','_')}"
-            snippet = it.get("snippet","").replace("<span class=\"searchmatch\">","").replace("</span>","")
+            snippet = (it.get("snippet","")
+                       .replace('<span class="searchmatch">',"")
+                       .replace("</span>",""))
             results.append({"title": title, "url": page, "image": None, "source":"wikipedia.org", "snippet": snippet})
         return ok({"results": results})
     except Exception as e:
         return err(500, "server_error", e)
 
-# ========= DEEPSEARCH (light multi-source summary) =========
+# ========= DEEPSEARCH (light) =========
 @app.post("/deepsearch")
 def deepsearch():
-    """
-    Body: { q, agent? }
-    Returns: { ok, answer, cards }
-    """
     try:
         data = request.get_json(force=True, silent=True) or {}
         q = (data.get("q") or "").strip()
-        cards = news_cards(q)[:6] + crypto_cards(q)[:2]
-        summary = f"**Summary for “{q}”**\n\n- I gathered top headlines and market context.\n- Tap any card to open sources.\n- Ask for more detail on a specific source."
+        cards = news_cards(q)[:6] + crypto_cards(q)[:2] + yt_search(q)[:2]
+        summary = f"**Summary for “{q}”**\n\n- Collected headlines, videos, and market context.\n- Tap any card to open.\n- Ask for deeper analysis on any item."
         return ok({"answer": summary, "cards": cards})
     except Exception as e:
         return err(500, "server_error", e)
@@ -433,7 +463,7 @@ def analyze_image():
     """
     Multipart form:
       image: <file>, prompt?, agent?, web?, persona?
-    Returns: { ok, ai_description|summary|reply, cards:[{type:'gallery',images:[dataurl or proxy]}] }
+    Returns: { ok, ai_description|summary|reply, cards:[{type:'gallery',images:[dataurl]}], vision_used:bool }
     """
     try:
         if "image" not in request.files:
@@ -444,7 +474,7 @@ def analyze_image():
         durl = dataurl(blob, mime)
 
         prompt = request.form.get("prompt") or "Describe this image in detail and list notable elements."
-        description = "Here’s what I see: a photo with noticeable features (lighting, colors, subjects)."
+        description = "Here’s what I see: a photo with notable colors, subjects, and composition."
 
         # If OpenAI Vision available, try it
         tried_vision = False
@@ -471,24 +501,50 @@ def analyze_image():
     except Exception as e:
         return err(500, "server_error", e)
 
-# ========= IMG Proxy (fixes CORS / mixed content) =========
+# ========= Hardened IMG Proxy =========
 @app.get("/img")
 def img_proxy():
     """
     Proxy remote images: /img?url=<http(s)://...>
+    Fixes CORS, follows redirects, normalizes content type.
     """
     url = request.args.get("url", "").strip()
     if not url.startswith("http"):
         return err(400, "invalid url")
+
     try:
-        r = requests.get(url, stream=True, timeout=14)
+        r = requests.get(
+            url,
+            stream=True,
+            timeout=18,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Droxion Image Proxy)",
+                "Accept": "image/avif,image/webp,image/apng,image/*;q=0.8,*/*;q=0.5",
+                "Referer": url.split("/", 3)[0] + "//" + url.split("/", 3)[2],
+            },
+            allow_redirects=True,
+        )
         r.raise_for_status()
-        mime = r.headers.get("Content-Type","image/jpeg")
-        return Response(r.iter_content(64*1024), content_type=mime)
+
+        mime = r.headers.get("Content-Type", "")
+        if not mime or "text/html" in mime:
+            guess = mimetypes.guess_type(url)[0]
+            mime = guess or "image/jpeg"
+
+        def gen():
+            for chunk in r.iter_content(64 * 1024):
+                if chunk:
+                    yield chunk
+
+        resp = Response(gen(), content_type=mime)
+        resp.headers["Cache-Control"] = "public, max-age=86400, immutable"
+        resp.headers["X-Accel-Buffering"] = "no"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
     except Exception as e:
         return err(502, "fetch_failed", e)
 
-# ========= Image tools via Replicate (optional) =========
+# ========= Replicate image tools (optional) =========
 def replicate_required():
     if not (replicate and REPLICATE_API_TOKEN):
         return False
