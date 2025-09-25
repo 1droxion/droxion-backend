@@ -1,27 +1,33 @@
-{
-  "name": "droxion-frontend",
-  "private": true,
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview --port 4173"
-  },
-  "dependencies": {
-    "axios": "^1.7.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-icons": "^5.2.1",
-    "react-markdown": "^9.0.1",
-    "rehype-raw": "^7.0.0",
-    "remark-gfm": "^4.0.0"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.0",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.13",
-    "vite": "^5.4.0"
-  }
-}
+# --- Core Web ---
+flask
+flask-cors
+gunicorn
+
+# --- Utilities ---
+ipinfo
+moviepy
+imageio-ffmpeg
+numpy
+Pillow
+python-dateutil
+python-dotenv
+pytz
+requests
+tqdm
+beautifulsoup4
+
+# --- Payments & APIs ---
+stripe
+pexels_api
+openai>=1.0.0
+anthropic
+google-generativeai
+replicate
+
+# --- CPU Image Generation (NEW) ---
+torch==2.3.1           # CPU build, safe on Render/Heroku
+diffusers==0.30.2      # Stable Diffusion / Pix2Pix / Inpainting
+transformers>=4.41
+accelerate>=0.33
+safetensors
+hf_transfer
