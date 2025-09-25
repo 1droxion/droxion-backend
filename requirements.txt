@@ -25,9 +25,9 @@ google-generativeai
 replicate
 
 # --- CPU Image Generation (NEW) ---
-torch==2.3.1           # CPU build, safe on Render/Heroku
-diffusers==0.30.2      # Stable Diffusion / Pix2Pix / Inpainting
+torch==2.3.1          # CPU build, safe on Render
+diffusers==0.30.2
 transformers>=4.41
 accelerate>=0.33
 safetensors
-hf_transfer
+hf-transfer           # ✅ hyphenated package name (not underscore)
