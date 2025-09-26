@@ -62,6 +62,45 @@ BG_COMPOSE_VERSION = os.getenv("BG_COMPOSE_VERSION", "")
 app = Flask(__name__)
 CORS(app)
 
+# ======== Simple JSON History Store (per user) ========
+from pathlib import Path
+DATA_DIR = Path(os.getenv("DATA_DIR", "/tmp/droxion_data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+def _hist_path(user_id: str) -> Path:
+    safe = "".join([c for c in (user_id or "anon") if c.isalnum() or c in ("-","_")])[:64]
+    return DATA_DIR / f"hist_{safe}.json"
+
+def _hist_read(user_id: str):
+    p = _hist_path(user_id)
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text("utf-8"))
+    except Exception:
+        return []
+
+def _hist_write(user_id: str, items):
+    p = _hist_path(user_id)
+    try:
+        p.write_text(json.dumps(items, ensure_ascii=False), "utf-8")
+    except Exception:
+        pass
+
+def _hist_append(user_id: str, role: str, text: str, meta=None):
+    if not user_id or not text:
+        return
+    items = _hist_read(user_id)
+    items.append({
+        "time": int(time.time()),
+        "role": role,
+        "text": text,
+        "meta": meta or {}
+    })
+    # keep last 500 to avoid unbounded growth
+    if len(items) > 500:
+        items = items[-500:]
+    _hist_write(user_id, items)
 # ========= Helpers =========
 def ok(data=None, **kw):
     out = {"ok": True}
@@ -156,7 +195,31 @@ def health():
 def chat():
     """
     Body: { "messages":[{role,content}], ... } OR { "prompt": "..." }
-    Returns: { ok, reply, model, cards:[] }
+    # --- Remember + followups (optional, non-breaking) ---
+try:
+    user_id = (data.get("user_id") or "").strip()
+    if user_id:
+        # last user message in the array, if any
+        last_user = ""
+        for m in reversed(msgs):
+            if m.get("role") == "user":
+                last_user = m.get("content","").strip()
+                break
+        if last_user:
+            _hist_append(user_id, "user", last_user, {"source":"chat"})
+        if text:
+            _hist_append(user_id, "assistant", text, {"model": "auto"})
+
+    # simple client-ready followups
+    q = last_user or "this topic"
+    followups = [
+        f"Explain {q} in simple steps",
+        f"Pros & cons of {q}",
+        f"Give an example using {q}",
+    ]
+except Exception:
+    followups = []
+    return ok({"reply": text, "cards": cards, "followups": followups})
     """
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -654,6 +717,40 @@ def remix_face_locked():
     except Exception as e:
         return err(500, "server_error", e)
 
+@app.post("/history/save")
+def history_save():
+    """
+    Body:
+      { user_id: "...", message?: {role,text,meta?}, messages?: [...] }
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        user_id = (data.get("user_id") or "").strip() or "anon"
+        one = data.get("message")
+        many = data.get("messages")
+        if one and isinstance(one, dict):
+            _hist_append(user_id, one.get("role","user"), one.get("text",""), one.get("meta"))
+        if many and isinstance(many, list):
+            for m in many:
+                if isinstance(m, dict):
+                    _hist_append(user_id, m.get("role","user"), m.get("text",""), m.get("meta"))
+        return ok({"saved": True})
+    except Exception as e:
+        return err(500, "server_error", e)
+
+@app.get("/history")
+def history_get():
+    """
+    Query: ?user_id=...
+    Returns: { ok, history:[{time,role,text,meta}] }
+    """
+    try:
+        user_id = (request.args.get("user_id") or "").strip() or "anon"
+        hist = _hist_read(user_id)
+        return ok({"history": hist})
+    except Exception as e:
+        return err(500, "server_error", e)
+        
 @app.post("/bg-swap")
 def bg_swap():
     try:
