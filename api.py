@@ -383,7 +383,23 @@ def youtube_search():
         return ok({"cards": yt_search(q)})
     except Exception as e:
         return err(500, "server_error", e)
-
+@app.post("/search-youtube")
+def search_youtube_compat():
+    """
+    Compatibility endpoint for the frontend AIChat.jsx which calls /search-youtube with {q}.
+    Returns { results: [{title, url}] } matching the UI’s mapper.
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        q = (data.get("q") or data.get("query") or "").strip()
+        if not q:
+            return ok({"results": []})
+        cards = yt_search(q)  # same helper your /youtube uses
+        # Frontend maps r.data.results -> {type:'youtube', url, title}
+        results = [{"title": c.get("title") or "YouTube", "url": c.get("url")} for c in cards if c.get("url")]
+        return ok({"results": results})
+    except Exception as e:
+        return err(500, "server_error", e)
 # ========= REALTIME =========
 @app.post("/realtime")
 def realtime():
