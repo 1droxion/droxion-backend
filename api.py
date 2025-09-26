@@ -331,8 +331,12 @@ def crypto_cards(query):
 
 def image_cards(query):
     q = (query or "wallpaper").replace("images:", "").strip() or "wallpaper"
-    urls = [f"https://source.unsplash.com/600x400/?{requests.utils.quote(q)}&sig={i}" for i in range(1, 13)]
-    return [{"type":"images-grid", "images": urls}]
+    # Primary: Lorem Picsum (stable, no API key). Secondary: LoremFlickr.
+    seeds = [f"{q}-{i}" for i in range(1, 13)]
+    picsum = [f"https://picsum.photos/seed/{requests.utils.quote(s)}/600/400" for s in seeds]
+    flickr = [f"https://loremflickr.com/600/400/{requests.utils.quote(q)}?lock={i}" for i in range(1, 13)]
+    urls = picsum[:6] + flickr[:6]   # a mix to keep variety and avoid thundering herd
+    return [{"type": "images-grid", "images": urls}]
 
 def yt_search(q, max_results=8):
     if not (YOUTUBE_API_KEY and q):
