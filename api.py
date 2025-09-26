@@ -1,26 +1,28 @@
-# api.py — Droxion backend (drop-in, resilient)
-# - /chat: OpenAI → Anthropic → Gemini with SAFE local fallback (never 5xx)
+# api.py — Droxion backend (full, drop-in)
+# Matches AIChat.jsx endpoints 1:1 and fixes previews:
+# - /chat: GPT-4o → Claude 3.5 Sonnet → Gemini 1.5 Pro (fallbacks)
 # - /realtime: news / weather / crypto / images / youtube (cards)
-# - /suggest, /search, /deepsearch, /youtube, /search-youtube
-# - /analyze-image (vision if available), /img proxy, Replicate tools
-# - History save/get
+# - /suggest: typeahead + followups
+# - /search: Wikipedia-first search → cards
+# - /deepsearch: lightweight multi-source summary + cards
+# - /analyze-image: multipart image → (Vision if available) → gallery + description
+# - /youtube: explicit YouTube search → youtube cards
+# - /img: hardened image proxy (CORS, redirects, MIME)
+# - Image tools via Replicate: /remix-image, /inpaint-image, /remix-face-locked, /bg-swap
 
-import os, io, base64, mimetypes, time, json, logging
-from pathlib import Path
+import os, io, base64, mimetypes, time, json
 from urllib.parse import urlencode
 import requests
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("droxion")
-
 # ========= Optional AI / APIs =========
+# pip install: openai anthropic google-generativeai replicate
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
 GOOGLE_API_KEY      = os.getenv("GOOGLE_API_KEY", "")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
-YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "")  # <- set on Render
+YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "")  # <-- add this on Render
 
 try:
     from openai import OpenAI
@@ -41,77 +43,26 @@ except Exception:
 
 # ========= Optional image tool models (Replicate) =========
 IMG_REPIX_MODEL   = os.getenv("IMG_REPIX_MODEL", "timbrooks/instruct-pix2pix")
-IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")
+IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")     # set explicit hash for stability
 
 IMG_INPAINT_MODEL   = os.getenv("IMG_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
 IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")
 
-FACE_LOCK_MODEL      = os.getenv("FACE_LOCK_MODEL", "")
-FACE_LOCK_VERSION    = os.getenv("FACE_LOCK_VERSION", "")
-FACE_RESTORE_MODEL   = os.getenv("FACE_RESTORE_MODEL", "")
+FACE_LOCK_MODEL   = os.getenv("FACE_LOCK_MODEL", "")       # e.g. "tencentarc/instantid"
+FACE_LOCK_VERSION = os.getenv("FACE_LOCK_VERSION", "")
+FACE_RESTORE_MODEL   = os.getenv("FACE_RESTORE_MODEL", "") # e.g. "sczhou/codeformer"
 FACE_RESTORE_VERSION = os.getenv("FACE_RESTORE_VERSION", "")
 
-BG_REMOVE_MODEL    = os.getenv("BG_REMOVE_MODEL", "")
-BG_REMOVE_VERSION  = os.getenv("BG_REMOVE_VERSION", "")
-BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")
+BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")       # e.g. "cjwbw/rembg"
+BG_REMOVE_VERSION = os.getenv("BG_REMOVE_VERSION", "")
+BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")     # e.g. "black-forest-labs/flux-schnell"
 BG_COMPOSE_VERSION = os.getenv("BG_COMPOSE_VERSION", "")
 
 # ========= App =========
 app = Flask(__name__)
-CORS(app, resources={r"/*": {
-    "origins": [
-        r"https://.*vercel\.app",
-        r"https://.*droxion.*",
-        r"https://.*\.onrender\.com",
-        "http://localhost:5173",
-        "http://localhost:3000"
-    ],
-    "allow_headers": ["Content-Type", "Authorization"],
-    "methods": ["GET", "POST", "OPTIONS"],
-    "supports_credentials": True
-}})
-
-# ======== Simple JSON History Store (per user) ========
-DATA_DIR = Path(os.getenv("DATA_DIR", "/tmp/droxion_data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-def _hist_path(user_id: str) -> Path:
-    safe = "".join([c for c in (user_id or "anon") if c.isalnum() or c in ("-","_")])[:64]
-    return DATA_DIR / f"hist_{safe}.json"
-
-def _hist_read(user_id: str):
-    p = _hist_path(user_id)
-    if not p.exists():
-        return []
-    try:
-        return json.loads(p.read_text("utf-8"))
-    except Exception:
-        return []
-
-def _hist_write(user_id: str, items):
-    p = _hist_path(user_id)
-    try:
-        p.write_text(json.dumps(items, ensure_ascii=False), "utf-8")
-    except Exception:
-        pass
-
-def _hist_append(user_id: str, role: str, text: str, meta=None):
-    if not user_id or not text:
-        return
-    items = _hist_read(user_id)
-    items.append({
-        "time": int(time.time()),
-        "role": role,
-        "text": text,
-        "meta": meta or {}
-    })
-    if len(items) > 500:
-        items = items[-500:]
-    _hist_write(user_id, items)
+CORS(app)
 
 # ========= Helpers =========
-DEFAULT_TIMEOUT = (5, 10)  # (connect, read) seconds
-
 def ok(data=None, **kw):
     out = {"ok": True}
     if data and isinstance(data, dict):
@@ -126,6 +77,7 @@ def err(status, msg, detail=None):
     return jsonify(out), status
 
 def str_urls(rep_result):
+    """Normalize Replicate outputs to List[str] of URLs."""
     if rep_result is None:
         return []
     if isinstance(rep_result, list):
@@ -153,8 +105,7 @@ def get_json(url, params=None, headers=None, timeout=12):
         r = requests.get(url, params=params, headers=headers, timeout=timeout)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
-        log.warning("get_json failed: %s %s", url, e)
+    except Exception:
         return None
 
 def get_text(url, params=None, headers=None, timeout=12):
@@ -162,8 +113,7 @@ def get_text(url, params=None, headers=None, timeout=12):
         r = requests.get(url, params=params, headers=headers, timeout=timeout)
         r.raise_for_status()
         return r.text
-    except Exception as e:
-        log.warning("get_text failed: %s %s", url, e)
+    except Exception:
         return ""
 
 def gpt_client():
@@ -201,65 +151,46 @@ def health():
         "youtube": bool(YOUTUBE_API_KEY),
     })
 
-# ========= CHAT (fallbacks, never 5xx) =========
+# ========= CHAT (fallbacks) =========
 @app.post("/chat")
 def chat():
     """
     Body: { "messages":[{role,content}], ... } OR { "prompt": "..." }
-    Returns 200 always with {ok, reply, model, cards?, reason?}
+    Returns: { ok, reply, model, cards:[] }
     """
     try:
         data = request.get_json(force=True, silent=True) or {}
         msgs = data.get("messages")
         prompt = data.get("prompt")
-        user_id = (data.get("user_id") or "").strip()
-
         if not msgs and prompt:
             msgs = [{"role":"user","content":prompt}]
         if not msgs:
-            return ok({"reply": "Tell me what you’d like to know.", "model":"local", "cards":[]})
-
-        last_user = ""
-        for m in reversed(msgs):
-            if (m.get("role") or "").lower() == "user":
-                last_user = (m.get("content") or "").strip()
-                break
-
-        providers = {"openai": False, "anthropic": False, "gemini": False}
-        errors = {}
+            return err(400, "messages or prompt required")
 
         # 1) OpenAI GPT-4o
         try:
             oc = gpt_client()
             if oc:
-                providers["openai"] = True
                 resp = oc.chat.completions.create(
                     model="gpt-4o",
                     messages=msgs,
                     temperature=0.2
                 )
                 text = resp.choices[0].message.content
-                if user_id and last_user:
-                    _hist_append(user_id, "user", last_user, {"source":"chat"})
-                    _hist_append(user_id, "assistant", text, {"model":"gpt-4o"})
                 return ok({"reply": text, "model":"gpt-4o", "cards":[]})
-        except Exception as e:
-            errors["openai"] = str(e)[:300]
-            log.warning("OpenAI error: %s", e)
+        except Exception:
+            pass
 
         # 2) Claude 3.5 Sonnet
         try:
             ac = claude_client()
             if ac:
-                providers["anthropic"] = True
                 sys_prompt = ""
                 convo = []
                 for m in msgs:
-                    r = (m.get("role") or "").lower(); c = m.get("content","")
-                    if r == "system":
-                        sys_prompt = (sys_prompt + "\n" + c).strip()
-                    elif r in ("user","assistant"):
-                        convo.append({"role": r, "content": c})
+                    r = m.get("role"); c=m.get("content","")
+                    if r=="system": sys_prompt = (sys_prompt + "\n" + c).strip()
+                    elif r in ("user","assistant"): convo.append({"role":r,"content":c})
                 msg = ac.messages.create(
                     model="claude-3-5-sonnet-20240620",
                     max_tokens=1024,
@@ -267,61 +198,25 @@ def chat():
                     system=sys_prompt or None,
                     messages=convo
                 )
-                out = "".join([b.text for b in msg.content if hasattr(b, "text")])
-                if user_id and last_user:
-                    _hist_append(user_id, "user", last_user, {"source":"chat"})
-                    _hist_append(user_id, "assistant", out, {"model":"claude-3.5-sonnet"})
+                out = "".join([b.text for b in msg.content if hasattr(b,"text")])
                 return ok({"reply": out, "model":"claude-3.5-sonnet", "cards":[]})
-        except Exception as e:
-            errors["anthropic"] = str(e)[:300]
-            log.warning("Anthropic error: %s", e)
+        except Exception:
+            pass
 
         # 3) Gemini 1.5 Pro
         try:
             g = gemini_client()
             if g:
-                providers["gemini"] = True
                 model = g.GenerativeModel("gemini-1.5-pro")
                 stitched = "\n".join([f"{m.get('role')}: {m.get('content','')}" for m in msgs])
                 resp = model.generate_content(stitched)
-                text = getattr(resp, "text", "") or ""
-                if user_id and last_user:
-                    _hist_append(user_id, "user", last_user, {"source":"chat"})
-                    _hist_append(user_id, "assistant", text, {"model":"gemini-1.5-pro"})
-                return ok({"reply": text, "model":"gemini-1.5-pro", "cards":[]})
-        except Exception as e:
-            errors["gemini"] = str(e)[:300]
-            log.warning("Gemini error: %s", e)
+                return ok({"reply": getattr(resp,"text","") or "", "model":"gemini-1.5-pro", "cards":[]})
+        except Exception:
+            pass
 
-        # ---- Local offline fallback (never 5xx) ----
-        reason_bits = []
-        if not any(providers.values()):
-            reason_bits.append("no_providers_configured")
-        for k in errors:
-            reason_bits.append(f"{k}_error")
-
-        topic = last_user or "your topic"
-        fallback = (
-            f"Here’s a quick overview of **{topic}** (offline mode):\n\n"
-            f"1) What it is: a concise summary based on well-known public facts.\n"
-            f"2) Key points: definitions, typical features, and common use cases.\n"
-            f"3) Next steps: ask me for pros/cons, examples, or a step-by-step guide.\n\n"
-            f"_Note: Live AI providers were unavailable just now; I’ve shown an offline answer so you’re not blocked._"
-        )
-        return ok({
-            "reply": fallback,
-            "model": "local-offline",
-            "cards": [],
-            "reason": ", ".join(reason_bits) or "provider_unavailable"
-        })
+        return err(502, "all providers failed (OpenAI → Anthropic → Gemini)")
     except Exception as e:
-        log.exception("chat route error")
-        return ok({
-            "reply": "Temporary server hiccup. Try again in a moment.",
-            "model": "local-error",
-            "cards": [],
-            "reason": f"server_error: {str(e)[:200]}"
-        })
+        return err(500, "server_error", e)
 
 # ========= Suggest (typeahead / followups) =========
 @app.get("/suggest")
@@ -436,10 +331,11 @@ def crypto_cards(query):
 
 def image_cards(query):
     q = (query or "wallpaper").replace("images:", "").strip() or "wallpaper"
+    # Primary: Lorem Picsum (stable, no API key). Secondary: LoremFlickr.
     seeds = [f"{q}-{i}" for i in range(1, 13)]
     picsum = [f"https://picsum.photos/seed/{requests.utils.quote(s)}/600/400" for s in seeds]
     flickr = [f"https://loremflickr.com/600/400/{requests.utils.quote(q)}?lock={i}" for i in range(1, 13)]
-    urls = picsum[:6] + flickr[:6]
+    urls = picsum[:6] + flickr[:6]   # a mix to keep variety and avoid thundering herd
     return [{"type": "images-grid", "images": urls}]
 
 def yt_search(q, max_results=8):
@@ -478,8 +374,7 @@ def yt_search(q, max_results=8):
                 "publishedAt": sn.get("publishedAt"),
             })
         return cards
-    except Exception as e:
-        log.warning("yt_search failed: %s", e)
+    except Exception:
         return []
 
 @app.post("/youtube")
@@ -492,21 +387,23 @@ def youtube_search():
         return ok({"cards": yt_search(q)})
     except Exception as e:
         return err(500, "server_error", e)
-
 @app.post("/search-youtube")
 def search_youtube_compat():
-    """Compatibility endpoint for AIChat.jsx ({q} -> {results})."""
+    """
+    Compatibility endpoint for the frontend AIChat.jsx which calls /search-youtube with {q}.
+    Returns { results: [{title, url}] } matching the UI’s mapper.
+    """
     try:
         data = request.get_json(force=True, silent=True) or {}
         q = (data.get("q") or data.get("query") or "").strip()
         if not q:
             return ok({"results": []})
-        cards = yt_search(q)
+        cards = yt_search(q)  # same helper your /youtube uses
+        # Frontend maps r.data.results -> {type:'youtube', url, title}
         results = [{"title": c.get("title") or "YouTube", "url": c.get("url")} for c in cards if c.get("url")]
         return ok({"results": results})
     except Exception as e:
         return err(500, "server_error", e)
-
 # ========= REALTIME =========
 @app.post("/realtime")
 def realtime():
@@ -522,7 +419,7 @@ def realtime():
         cards=[]; md=None
         if intent == "news":
             cards = news_cards(q)
-            cards += yt_search(q)[:4]
+            cards += yt_search(q)[:4]  # enrich news with related videos
             md = f"Top news for **{q or 'today'}**"
         elif intent == "weather":
             cards = weather_cards(q); md = f"Weather for **{q or 'your city'}**"
@@ -543,6 +440,10 @@ def realtime():
 # ========= SEARCH (Wikipedia-first) =========
 @app.post("/search")
 def search():
+    """
+    Body: { prompt, web? }
+    Returns: { ok, results:[{title,url,image,source,snippet}] }
+    """
     try:
         data = request.get_json(force=True, silent=True) or {}
         prompt = (data.get("prompt") or "").strip()
@@ -579,6 +480,11 @@ def deepsearch():
 # ========= ANALYZE IMAGE (multipart) =========
 @app.post("/analyze-image")
 def analyze_image():
+    """
+    Multipart form:
+      image: <file>, prompt?, agent?, web?, persona?
+    Returns: { ok, ai_description|summary|reply, cards:[{type:'gallery',images:[dataurl]}], vision_used:bool }
+    """
     try:
         if "image" not in request.files:
             return err(400, "image file required")
@@ -590,6 +496,7 @@ def analyze_image():
         prompt = request.form.get("prompt") or "Describe this image in detail and list notable elements."
         description = "Here’s what I see: a photo with notable colors, subjects, and composition."
 
+        # If OpenAI Vision available, try it
         tried_vision = False
         if OPENAI_API_KEY and OpenAI:
             try:
@@ -606,8 +513,8 @@ def analyze_image():
                     ]
                 )
                 description = vision.choices[0].message.content.strip() or description
-            except Exception as e:
-                log.warning("Vision fail: %s", e)
+            except Exception:
+                pass
 
         cards = [{"type":"gallery","images":[durl]}]
         return ok({"ai_description": description, "cards": cards, "vision_used": tried_vision})
@@ -617,6 +524,10 @@ def analyze_image():
 # ========= Hardened IMG Proxy =========
 @app.get("/img")
 def img_proxy():
+    """
+    Proxy remote images: /img?url=<http(s)://...>
+    Fixes CORS, follows redirects, normalizes content type.
+    """
     url = request.args.get("url", "").strip()
     if not url.startswith("http"):
         return err(400, "invalid url")
@@ -740,32 +651,6 @@ def remix_face_locked():
             if fr_urls: out_url = fr_urls[0]
 
         return ok({"images":[out_url]})
-    except Exception as e:
-        return err(500, "server_error", e)
-
-@app.post("/history/save")
-def history_save():
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        user_id = (data.get("user_id") or "").strip() or "anon"
-        one = data.get("message")
-        many = data.get("messages")
-        if one and isinstance(one, dict):
-            _hist_append(user_id, one.get("role","user"), one.get("text",""), one.get("meta"))
-        if many and isinstance(many, list):
-            for m in many:
-                if isinstance(m, dict):
-                    _hist_append(user_id, m.get("role","user"), m.get("text",""), m.get("meta"))
-        return ok({"saved": True})
-    except Exception as e:
-        return err(500, "server_error", e)
-
-@app.get("/history")
-def history_get():
-    try:
-        user_id = (request.args.get("user_id") or "").strip() or "anon"
-        hist = _hist_read(user_id)
-        return ok({"history": hist})
     except Exception as e:
         return err(500, "server_error", e)
 
