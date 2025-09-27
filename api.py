@@ -62,6 +62,94 @@ BG_COMPOSE_VERSION = os.getenv("BG_COMPOSE_VERSION", "")
 app = Flask(__name__)
 CORS(app)
 
+# ===== DAU / WAU / MAU =====
+from datetime import datetime, timedelta, timezone
+import json, os
+from dateutil import parser
+import pytz
+from flask import jsonify
+
+LOG_PATH = os.getenv("USER_LOGS_PATH", "user_logs.json")
+NY = pytz.timezone("America/New_York")
+def iter_logs(path):
+    """Yield dict events from file that can be JSONL or a JSON array."""
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        first_chars = f.read(1)
+        if not first_chars:
+            return
+        f.seek(0)
+        if first_chars == "[":  # JSON array
+            try:
+                arr = json.load(f)
+                for item in arr:
+                    if isinstance(item, dict):
+                        yield item
+            except Exception:
+                return
+        else:  # JSONL
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                    if isinstance(evt, dict):
+                        yield evt
+                except Exception:
+                    continue
+
+def to_ny_date(dt):
+    if isinstance(dt, str):
+        try:
+            from dateutil import parser
+            dt = parser.isoparse(dt)
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        from datetime import timezone
+        dt = dt.replace(tzinfo=timezone.utc)
+    import pytz
+    dt_ny = dt.astimezone(NY)
+    return dt_ny.date()
+
+def iso_week_start(d):
+    return d - timedelta(days=d.weekday())
+
+def month_key(d):
+    return f"{d.year:04d}-{d.month:02d}"
+
+@app.route("/stats/active", methods=["GET"])
+def stats_active():
+    today_ny = datetime.now(NY).date()
+    day_cutoff = today_ny
+    week_cutoff = today_ny - timedelta(days=6)
+    month_cutoff = today_ny - timedelta(days=29)
+
+    dau_set, wau_set, mau_set = set(), set(), set()
+
+    for evt in iter_logs(LOG_PATH):
+        uid = evt.get("user_id") or evt.get("uid")
+        ts  = evt.get("time") or evt.get("timestamp")
+        if not uid or not ts:
+            continue
+        d = to_ny_date(ts)
+        if not d:
+            continue
+
+        if d >= day_cutoff:
+            dau_set.add(uid)
+        if d >= week_cutoff:
+            wau_set.add(uid)
+        if d >= month_cutoff:
+            mau_set.add(uid)
+
+    return jsonify({
+        "dau": len(dau_set),
+        "wau": len(wau_set),
+        "mau": len(mau_set)
+    })
 # ========= Helpers =========
 def ok(data=None, **kw):
     out = {"ok": True}
