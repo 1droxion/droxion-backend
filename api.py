@@ -119,6 +119,22 @@ def iso_week_start(d):
 
 def month_key(d):
     return f"{d.year:04d}-{d.month:02d}"
+    
+@app.route("/track", methods=["POST"])
+def track():
+    try:
+        evt = request.get_json(force=True) or {}
+        evt.setdefault("type", "visit")
+        evt.setdefault("time", datetime.now(timezone.utc).isoformat())
+        evt["ip"] = request.headers.get("X-Forwarded-For", request.remote_addr)
+        evt["ua"] = request.headers.get("User-Agent")
+
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(evt, ensure_ascii=False) + "\n")
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/stats/active", methods=["GET"])
 def stats_active():
