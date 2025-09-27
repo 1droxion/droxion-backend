@@ -241,6 +241,56 @@ def make_card(**kw):
     c.update({k:v for k,v in kw.items() if v is not None})
     return c
 
+
+# ---------- Google Programmable Search ----------
+GOOGLE_CUSTOM_KEY = os.getenv("GOOGLE_CUSTOM_SEARCH_API_KEY", "")
+GOOGLE_CX         = os.getenv("GOOGLE_SEARCH_ENGINE_ID", "")
+
+def _google_cse_request(params):
+    if not GOOGLE_CUSTOM_KEY or not GOOGLE_CX:
+        return {}
+    url = "https://www.googleapis.com/customsearch/v1"
+    try:
+        r = requests.get(url, params={**params, "key": GOOGLE_CUSTOM_KEY, "cx": GOOGLE_CX}, timeout=12)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {}
+
+def google_web_results(query, num=6):
+    """Return Droxion link cards from Google web search."""
+    data = _google_cse_request({
+        "q": query, "num": max(1, min(num, 10)), "safe": "active", "gl": "in"
+    })
+    cards = []
+    for item in data.get("items", [])[:num]:
+        pagemap = item.get("pagemap") or {}
+        thumb = ""
+        for key in ("cse_thumbnail", "imageobject", "metatags"):
+            v = pagemap.get(key)
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                thumb = v[0].get("src") or v[0].get("og:image") or v[0].get("content") or ""
+                if thumb:
+                    break
+        cards.append({
+            "type": "link-card",
+            "title": item.get("title", ""),
+            "subtitle": item.get("displayLink", ""),
+            "text": item.get("snippet", ""),
+            "href": item.get("link", ""),
+            "thumb": thumb,
+            "source": "google",
+        })
+    return cards
+
+def google_image_results(query, num=8):
+    """Return image URLs for a compact grid."""
+    data = _google_cse_request({
+        "q": query, "num": max(1, min(num, 10)), "searchType": "image",
+        "safe": "active", "imgSize": "large"
+    })
+    return [it.get("link") for it in data.get("items", [])[:num] if it.get("link")]
+
 # ========= Health =========
 @app.get("/health")
 def health():
@@ -520,24 +570,46 @@ def realtime():
         q = (data.get("query") or "").strip()
         intent = (data.get("intent") or "").strip().lower()
 
-        cards=[]; md=None
+        cards = []
+        md = None
+
         if intent == "news":
             cards = news_cards(q)
             cards += yt_search(q)[:4]  # enrich news with related videos
             md = f"Top news for **{q or 'today'}**"
+
         elif intent == "weather":
-            cards = weather_cards(q); md = f"Weather for **{q or 'your city'}**"
+            cards = weather_cards(q)
+            md = f"Weather for **{q or 'your city'}**"
+
         elif intent == "crypto":
-            cards = crypto_cards(q); md = "Crypto prices (CoinGecko)"
+            cards = crypto_cards(q)
+            md = "Crypto prices (CoinGecko)"
+
         elif intent == "images":
-            cards = image_cards(q); md = f"Images for **{q or 'wallpaper'}**"
+            cards = image_cards(q)
+            md = f"Images for **{q or 'wallpaper'}**"
+
         elif intent == "youtube":
-            cards = yt_search(q); md = f"YouTube results for **{q}**"
+            cards = yt_search(q)
+            md = f"YouTube results for **{q}**"
+
         else:
             cards = news_cards(q)[:6] + crypto_cards(q)[:3] + yt_search(q)[:2]
             md = f"Results for **{q}**"
 
+        # --- Google Web Results ---
+        web_cards = google_web_results(q, num=6)
+        if web_cards:
+            cards.extend(web_cards)
+
+        # --- Google Image Results (grid) ---
+        img_urls = google_image_results(q, num=8)
+        if img_urls:
+            cards.append({"type": "images-grid", "images": img_urls})
+
         return ok({"cards": cards, "markdown": md})
+
     except Exception as e:
         return err(500, "server_error", e)
 
