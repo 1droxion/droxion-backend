@@ -31,4 +31,3 @@ transformers>=4.41
 accelerate>=0.33
 safetensors
 hf-transfer           # ✅ hyphenated package name (not underscore)
-vercel/analytics
