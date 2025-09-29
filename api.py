@@ -67,20 +67,27 @@ from datetime import datetime, timedelta, timezone
 import json, os
 from dateutil import parser
 import pytz
-from flask import jsonify
+from flask import request, jsonify
 
-LOG_PATH = os.getenv("USER_LOGS_PATH", "user_logs.json")
+# Write & read the SAME file; /tmp is always writable on Render
+LOG_PATH = os.getenv("USER_LOGS_PATH", "/tmp/user_logs.json")
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+if not os.path.exists(LOG_PATH):
+    with open(LOG_PATH, "w", encoding="utf-8") as f:
+        f.write("")
+
 NY = pytz.timezone("America/New_York")
+
 def iter_logs(path):
     """Yield dict events from file that can be JSONL or a JSON array."""
     if not os.path.exists(path):
         return
     with open(path, "r", encoding="utf-8") as f:
-        first_chars = f.read(1)
-        if not first_chars:
+        first = f.read(1)
+        if not first:
             return
         f.seek(0)
-        if first_chars == "[":  # JSON array
+        if first == "[":  # JSON array
             try:
                 arr = json.load(f)
                 for item in arr:
@@ -101,25 +108,23 @@ def iter_logs(path):
                     continue
 
 def to_ny_date(dt):
+    """Return date in America/New_York from ISO string or datetime."""
     if isinstance(dt, str):
         try:
-            from dateutil import parser
             dt = parser.isoparse(dt)
         except Exception:
             return None
     if dt.tzinfo is None:
-        from datetime import timezone
         dt = dt.replace(tzinfo=timezone.utc)
-    import pytz
-    dt_ny = dt.astimezone(NY)
-    return dt_ny.date()
+    return dt.astimezone(NY).date()
 
 def iso_week_start(d):
     return d - timedelta(days=d.weekday())
 
 def month_key(d):
     return f"{d.year:04d}-{d.month:02d}"
-    
+
+# ---- tracking: append a visit/event ----
 @app.route("/track", methods=["POST"])
 def track():
     try:
@@ -132,16 +137,26 @@ def track():
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(evt, ensure_ascii=False) + "\n")
 
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "path": LOG_PATH})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+# ---- (optional) quick debug: last 20 raw log lines ----
+@app.route("/logs", methods=["GET"])
+def view_logs():
+    if not os.path.exists(LOG_PATH):
+        return jsonify({"logs": []})
+    with open(LOG_PATH, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    return jsonify({"logs": lines[-20:]})
+
+# ---- active users summary ----
 @app.route("/stats/active", methods=["GET"])
 def stats_active():
     today_ny = datetime.now(NY).date()
     day_cutoff = today_ny
-    week_cutoff = today_ny - timedelta(days=6)
-    month_cutoff = today_ny - timedelta(days=29)
+    week_cutoff = today_ny - timedelta(days=6)   # last 7 days
+    month_cutoff = today_ny - timedelta(days=29) # last 30 days
 
     dau_set, wau_set, mau_set = set(), set(), set()
 
@@ -152,7 +167,8 @@ def stats_active():
             continue
         d = to_ny_date(ts)
         if not d:
-            continue
+            # fallback: count as today if parsing failed
+            d = today_ny
 
         if d >= day_cutoff:
             dau_set.add(uid)
@@ -164,8 +180,7 @@ def stats_active():
     return jsonify({
         "dau": len(dau_set),
         "wau": len(wau_set),
-        "mau": len(mau_set)
-    })
+        "mau": len(m
 # ========= Helpers =========
 def ok(data=None, **kw):
     out = {"ok": True}
