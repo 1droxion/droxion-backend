@@ -330,9 +330,9 @@ def health():
     })
 
 # ========= CHAT (fallbacks) =========
-@app.post("/chat")
+@app.route("/chat", methods=["POST"])
 def chat():
-    """
+    ...
     Body: { "messages":[{role,content}], ... } OR { "prompt": "..." }
     Returns: { ok, reply, model, cards:[] }
     """
