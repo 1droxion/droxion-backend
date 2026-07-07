@@ -554,7 +554,7 @@ def youtube_search():
 def search_youtube_compat():
     """
     Compatibility endpoint for the frontend AIChat.jsx which calls /search-youtube with {q}.
-    Returns { results: [{title, url}] } matching the UI's mapper.
+    
     """
     try:
         data = request.get_json(force=True, silent=True) or {}
