@@ -178,9 +178,11 @@ def stats_active():
             mau_set.add(uid)
 
     return jsonify({
-        "dau": len(dau_set),
-        "wau": len(wau_set),
-        "mau": len(m)
+    "dau": len(dau_set),
+    "wau": len(wau_set),
+    "mau": len(m)
+})
+
 # ========= Helpers =========
 def ok(data=None, **kw):
     out = {"ok": True}
