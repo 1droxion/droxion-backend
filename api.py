@@ -62,6 +62,13 @@ BG_COMPOSE_VERSION = os.getenv("BG_COMPOSE_VERSION", "")
 app = Flask(__name__)
 CORS(app)
 
+@app.route("/")
+def home():
+    return jsonify({
+        "ok": True,
+        "message": "Droxion backend is live"
+    })
+
 # ===== DAU / WAU / MAU =====
 from datetime import datetime, timedelta, timezone
 import json, os
@@ -177,11 +184,11 @@ def stats_active():
         if d >= month_cutoff:
             mau_set.add(uid)
 
-    return jsonify({
-    "dau": len(dau_set),
-    "wau": len(wau_set),
-    "mau": len(m)
-})
+        return jsonify({
+        "dau": len(dau_set),
+        "wau": len(wau_set),
+        "mau": len(mau_set)
+    })
 
 # ========= Helpers =========
 def ok(data=None, **kw):
