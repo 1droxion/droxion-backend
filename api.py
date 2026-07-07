@@ -334,15 +334,14 @@ def health():
 # ========= Suggest (typeahead / followups) =========
 @app.get("/suggest")
 def suggest():
-    q = (request.args.get("q") or "").strip()
-    mode = (request.args.get("mode") or "").strip().lower()
-    sugs = []
+    ...
+    return ok({"suggestions": (sugs or [])[:10]})
 
-    if q:
-        try:# ========= CHAT (fallbacks) =========
+
+# ========= CHAT (fallbacks) =========
 @app.route("/chat", methods=["POST"])
 def chat():
-    """
+    ...
     Body: { "messages":[{role,content}], ... } OR { "prompt": "..." }
     Returns: { ok, reply, model, cards:[] }
     """
