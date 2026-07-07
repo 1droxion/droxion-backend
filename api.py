@@ -332,7 +332,7 @@ def health():
 # ========= CHAT (fallbacks) =========
 @app.route("/chat", methods=["POST"])
 def chat():
-    ...
+    """
     Body: { "messages":[{role,content}], ... } OR { "prompt": "..." }
     Returns: { ok, reply, model, cards:[] }
     """
@@ -340,59 +340,27 @@ def chat():
         data = request.get_json(force=True, silent=True) or {}
         msgs = data.get("messages")
         prompt = data.get("prompt")
+
         if not msgs and prompt:
-            msgs = [{"role":"user","content":prompt}]
+            msgs = [{"role": "user", "content": prompt}]
+
         if not msgs:
             return err(400, "messages or prompt required")
 
-        # 1) OpenAI GPT-4o
         try:
             oc = gpt_client()
             if oc:
                 resp = oc.chat.completions.create(
-                    model="gpt-4o",
+                    model="gpt-4o-mini",
                     messages=msgs,
                     temperature=0.2
                 )
                 text = resp.choices[0].message.content
-                return ok({"reply": text, "model":"gpt-4o", "cards":[]})
-        except Exception:
-            pass
+                return ok({"reply": text, "model": "gpt-4o-mini", "cards": []})
+        except Exception as e:
+            print("OpenAI ERROR:", e)
 
-        # 2) Claude 3.5 Sonnet
-        try:
-            ac = claude_client()
-            if ac:
-                sys_prompt = ""
-                convo = []
-                for m in msgs:
-                    r = m.get("role"); c=m.get("content","")
-                    if r=="system": sys_prompt = (sys_prompt + "\n" + c).strip()
-                    elif r in ("user","assistant"): convo.append({"role":r,"content":c})
-                msg = ac.messages.create(
-                    model="claude-3-5-sonnet-20240620",
-                    max_tokens=1024,
-                    temperature=0.2,
-                    system=sys_prompt or None,
-                    messages=convo
-                )
-                out = "".join([b.text for b in msg.content if hasattr(b,"text")])
-                return ok({"reply": out, "model":"claude-3.5-sonnet", "cards":[]})
-        except Exception:
-            pass
-
-        # 3) Gemini 1.5 Pro
-        try:
-            g = gemini_client()
-            if g:
-                model = g.GenerativeModel("gemini-1.5-pro")
-                stitched = "\n".join([f"{m.get('role')}: {m.get('content','')}" for m in msgs])
-                resp = model.generate_content(stitched)
-                return ok({"reply": getattr(resp,"text","") or "", "model":"gemini-1.5-pro", "cards":[]})
-        except Exception:
-            pass
-
-        return err(502, "all providers failed (OpenAI → Anthropic → Gemini)")
+        return err(502, "OpenAI failed or API key missing")
     except Exception as e:
         return err(500, "server_error", e)
 
