@@ -329,7 +329,17 @@ def health():
         "youtube": bool(YOUTUBE_API_KEY),
     })
 
-# ========= CHAT (fallbacks) =========
+
+
+# ========= Suggest (typeahead / followups) =========
+@app.get("/suggest")
+def suggest():
+    q = (request.args.get("q") or "").strip()
+    mode = (request.args.get("mode") or "").strip().lower()
+    sugs = []
+
+    if q:
+        try:# ========= CHAT (fallbacks) =========
 @app.route("/chat", methods=["POST"])
 def chat():
     """
@@ -347,32 +357,40 @@ def chat():
         if not msgs:
             return err(400, "messages or prompt required")
 
+        oc = gpt_client()
+        if not oc:
+            return ok({
+                "reply": "Backend is running, but OpenAI API key is not loaded.",
+                "model": "none",
+                "cards": []
+            })
+
         try:
-            oc = gpt_client()
-            if oc:
-                resp = oc.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=msgs,
-                    temperature=0.2
-                )
-                text = resp.choices[0].message.content
-                return ok({"reply": text, "model": "gpt-4o-mini", "cards": []})
+            resp = oc.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=msgs,
+                temperature=0.2
+            )
+
+            text = resp.choices[0].message.content
+
+            return ok({
+                "reply": text,
+                "model": "gpt-4o-mini",
+                "cards": []
+            })
+
         except Exception as e:
-            print("OpenAI ERROR:", e)
+            print("OpenAI ERROR:", str(e))
+            return ok({
+                "reply": f"OpenAI Error: {str(e)}",
+                "model": "error",
+                "cards": []
+            })
 
-        return err(502, "OpenAI failed or API key missing")
     except Exception as e:
-        return err(500, "server_error", e)
-
-# ========= Suggest (typeahead / followups) =========
-@app.get("/suggest")
-def suggest():
-    q = (request.args.get("q") or "").strip()
-    mode = (request.args.get("mode") or "").strip().lower()
-    sugs = []
-
-    if q:
-        try:
+        print("CHAT ERROR:", str(e))
+        return err(500, "server_error", str(e))
             j = get_json("https://duckduckgo.com/ac/", params={"q": q})
             if j and isinstance(j, list):
                 sugs = [x.get("phrase") for x in j if isinstance(x, dict) and x.get("phrase")]
