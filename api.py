@@ -184,7 +184,7 @@ def stats_active():
         if d >= month_cutoff:
             mau_set.add(uid)
 
-        return jsonify({
+    return jsonify({
         "dau": len(dau_set),
         "wau": len(wau_set),
         "mau": len(mau_set)
@@ -334,14 +334,45 @@ def health():
 # ========= Suggest (typeahead / followups) =========
 @app.get("/suggest")
 def suggest():
-    ...
+    q = (request.args.get("q") or "").strip()
+    mode = (request.args.get("mode") or "").strip().lower()
+    sugs = []
+
+    if q:
+        try:
+            j = get_json("https://duckduckgo.com/ac/", params={"q": q})
+            if j and isinstance(j, list):
+                sugs = [x.get("phrase") for x in j if isinstance(x, dict) and x.get("phrase")]
+        except Exception:
+            sugs = []
+
+    if mode == "followup":
+        base = [
+            f"Explain {q} in simple steps",
+            f"Pros & cons of {q}",
+            f"Give an example using {q}",
+            f"What should I do next about {q}?",
+        ]
+        return ok({"suggestions": base[:8]})
+
     return ok({"suggestions": (sugs or [])[:10]})
+
+
+# ========= History (frontend compatibility) =========
+@app.get("/history")
+def history():
+    return ok({"history": []})
+
+
+@app.post("/history/save")
+def history_save():
+    return ok({"saved": True})
 
 
 # ========= CHAT (fallbacks) =========
 @app.route("/chat", methods=["POST"])
 def chat():
-    ...
+    """
     Body: { "messages":[{role,content}], ... } OR { "prompt": "..." }
     Returns: { ok, reply, model, cards:[] }
     """
@@ -390,22 +421,7 @@ def chat():
     except Exception as e:
         print("CHAT ERROR:", str(e))
         return err(500, "server_error", str(e))
-            j = get_json("https://duckduckgo.com/ac/", params={"q": q})
-            if j and isinstance(j, list):
-                sugs = [x.get("phrase") for x in j if isinstance(x, dict) and x.get("phrase")]
-        except Exception:
-            sugs = []
 
-    if mode == "followup":
-        base = [
-            f"Explain {q} in simple steps",
-            f"Pros & cons of {q}",
-            f"Give an example using {q}",
-            f"What should I do next about {q}?",
-        ]
-        return ok({"suggestions": base[:8]})
-
-    return ok({"suggestions": (sugs or [])[:10]})
 
 # ========= News / Weather / Crypto / Images / YouTube =========
 def news_cards(query):
@@ -554,7 +570,7 @@ def youtube_search():
 def search_youtube_compat():
     """
     Compatibility endpoint for the frontend AIChat.jsx which calls /search-youtube with {q}.
-    
+    Returns { results: [{title, url}] } matching the UI’s mapper.
     """
     try:
         data = request.get_json(force=True, silent=True) or {}
