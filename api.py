@@ -396,11 +396,20 @@ def chat():
             })
 
         try:
-            resp = oc.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=msgs,
-                temperature=0.2
-            )
+            print("=" * 60)
+print("MESSAGES SENT TO OPENAI")
+print("=" * 60)
+
+for i, m in enumerate(msgs):
+    print(f"Message {i + 1}:")
+    print(m)
+    print("-" * 60)
+
+resp = oc.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=msgs,
+    temperature=0.2
+)
 
             text = resp.choices[0].message.content
 
