@@ -396,13 +396,11 @@ def chat():
             })
 
         try:
-            
-
-resp = oc.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=msgs,
-    temperature=0.2
-)
+            resp = oc.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=msgs,
+                temperature=0.2
+            )
 
             text = resp.choices[0].message.content
 
