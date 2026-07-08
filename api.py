@@ -1,889 +1,1133 @@
-# api.py — Droxion backend (full, drop-in)
-# Matches AIChat.jsx endpoints 1:1 and fixes previews:
-# - /chat: GPT-4o → Claude 3.5 Sonnet → Gemini 1.5 Pro (fallbacks)
-# - /realtime: news / weather / crypto / images / youtube (cards)
-# - /suggest: typeahead + followups
-# - /search: Wikipedia-first search → cards
-# - /deepsearch: lightweight multi-source summary + cards
-# - /analyze-image: multipart image → (Vision if available) → gallery + description
-# - /youtube: explicit YouTube search → youtube cards
-# - /img: hardened image proxy (CORS, redirects, MIME)
-# - Image tools via Replicate: /remix-image, /inpaint-image, /remix-face-locked, /bg-swap
-
-import os, io, base64, mimetypes, time, json
-from urllib.parse import urlencode
-import requests
-from flask import Flask, request, jsonify, Response
-from flask_cors import CORS
-
-# ========= Optional AI / APIs =========
-# pip install: openai anthropic google-generativeai replicate
-OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
-ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
-GOOGLE_API_KEY      = os.getenv("GOOGLE_API_KEY", "")
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
-YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "")  # <-- add this on Render
-
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
-try:
-    import anthropic
-except Exception:
-    anthropic = None
-try:
-    import google.generativeai as genai
-except Exception:
-    genai = None
-try:
-    import replicate
-except Exception:
-    replicate = None
-
-# ========= Optional image tool models (Replicate) =========
-IMG_REPIX_MODEL   = os.getenv("IMG_REPIX_MODEL", "timbrooks/instruct-pix2pix")
-IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")     # set explicit hash for stability
-
-IMG_INPAINT_MODEL   = os.getenv("IMG_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
-IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")
-
-FACE_LOCK_MODEL   = os.getenv("FACE_LOCK_MODEL", "")       # e.g. "tencentarc/instantid"
-FACE_LOCK_VERSION = os.getenv("FACE_LOCK_VERSION", "")
-FACE_RESTORE_MODEL   = os.getenv("FACE_RESTORE_MODEL", "") # e.g. "sczhou/codeformer"
-FACE_RESTORE_VERSION = os.getenv("FACE_RESTORE_VERSION", "")
-
-BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")       # e.g. "cjwbw/rembg"
-BG_REMOVE_VERSION = os.getenv("BG_REMOVE_VERSION", "")
-BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")     # e.g. "black-forest-labs/flux-schnell"
-BG_COMPOSE_VERSION = os.getenv("BG_COMPOSE_VERSION", "")
-
-# ========= App =========
-app = Flask(__name__)
-CORS(app)
-
-@app.route("/")
-def home():
-    return jsonify({
-        "ok": True,
-        "message": "Droxion backend is live"
-    })
-
-# ===== DAU / WAU / MAU =====
-from datetime import datetime, timedelta, timezone
-import json, os
-from dateutil import parser
-import pytz
-from flask import request, jsonify
-
-# Write & read the SAME file; /tmp is always writable on Render
-LOG_PATH = os.getenv("USER_LOGS_PATH", "/tmp/user_logs.json")
-os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-if not os.path.exists(LOG_PATH):
-    with open(LOG_PATH, "w", encoding="utf-8") as f:
-        f.write("")
-
-NY = pytz.timezone("America/New_York")
-
-def iter_logs(path):
-    """Yield dict events from file that can be JSONL or a JSON array."""
-    if not os.path.exists(path):
-        return
-    with open(path, "r", encoding="utf-8") as f:
-        first = f.read(1)
-        if not first:
-            return
-        f.seek(0)
-        if first == "[":  # JSON array
-            try:
-                arr = json.load(f)
-                for item in arr:
-                    if isinstance(item, dict):
-                        yield item
-            except Exception:
-                return
-        else:  # JSONL
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    evt = json.loads(line)
-                    if isinstance(evt, dict):
-                        yield evt
-                except Exception:
-                    continue
-
-def to_ny_date(dt):
-    """Return date in America/New_York from ISO string or datetime."""
-    if isinstance(dt, str):
-        try:
-            dt = parser.isoparse(dt)
-        except Exception:
-            return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(NY).date()
-
-def iso_week_start(d):
-    return d - timedelta(days=d.weekday())
-
-def month_key(d):
-    return f"{d.year:04d}-{d.month:02d}"
-
-# ---- tracking: append a visit/event ----
-@app.route("/track", methods=["POST"])
-def track():
-    try:
-        evt = request.get_json(force=True) or {}
-        evt.setdefault("type", "visit")
-        evt.setdefault("time", datetime.now(timezone.utc).isoformat())
-        evt["ip"] = request.headers.get("X-Forwarded-For", request.remote_addr)
-        evt["ua"] = request.headers.get("User-Agent")
-
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(evt, ensure_ascii=False) + "\n")
-
-        return jsonify({"ok": True, "path": LOG_PATH})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-# ---- (optional) quick debug: last 20 raw log lines ----
-@app.route("/logs", methods=["GET"])
-def view_logs():
-    if not os.path.exists(LOG_PATH):
-        return jsonify({"logs": []})
-    with open(LOG_PATH, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-    return jsonify({"logs": lines[-20:]})
-
-# ---- active users summary ----
-@app.route("/stats/active", methods=["GET"])
-def stats_active():
-    today_ny = datetime.now(NY).date()
-    day_cutoff = today_ny
-    week_cutoff = today_ny - timedelta(days=6)   # last 7 days
-    month_cutoff = today_ny - timedelta(days=29) # last 30 days
-
-    dau_set, wau_set, mau_set = set(), set(), set()
-
-    for evt in iter_logs(LOG_PATH):
-        uid = evt.get("user_id") or evt.get("uid")
-        ts  = evt.get("time") or evt.get("timestamp")
-        if not uid or not ts:
-            continue
-        d = to_ny_date(ts)
-        if not d:
-            # fallback: count as today if parsing failed
-            d = today_ny
-
-        if d >= day_cutoff:
-            dau_set.add(uid)
-        if d >= week_cutoff:
-            wau_set.add(uid)
-        if d >= month_cutoff:
-            mau_set.add(uid)
-
-    return jsonify({
-        "dau": len(dau_set),
-        "wau": len(wau_set),
-        "mau": len(mau_set)
-    })
-
-# ========= Helpers =========
-def ok(data=None, **kw):
-    out = {"ok": True}
-    if data and isinstance(data, dict):
-        out.update(data)
-    out.update(kw)
-    return jsonify(out)
-
-def err(status, msg, detail=None):
-    out = {"ok": False, "error": msg}
-    if detail:
-        out["detail"] = str(detail)
-    return jsonify(out), status
-
-def str_urls(rep_result):
-    """Normalize Replicate outputs to List[str] of URLs."""
-    if rep_result is None:
-        return []
-    if isinstance(rep_result, list):
-        out = []
-        for x in rep_result:
-            try:
-                out.append(str(x.url) if hasattr(x, "url") else str(x))
-            except Exception:
-                out.append(str(x))
-        return out
-    try:
-        return [str(rep_result.url)] if hasattr(rep_result, "url") else [str(rep_result)]
-    except Exception:
-        return [repr(rep_result)]
-
-def dataurl(file_bytes: bytes, mime: str):
-    b64 = base64.b64encode(file_bytes).decode("ascii")
-    return f"data:{mime};base64,{b64}"
-
-def is_data_url(s: str) -> bool:
-    return isinstance(s, str) and s.strip().startswith("data:image/")
-
-def get_json(url, params=None, headers=None, timeout=12):
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
-
-def get_text(url, params=None, headers=None, timeout=12):
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        return r.text
-    except Exception:
-        return ""
-
-def gpt_client():
-    if OPENAI_API_KEY and OpenAI:
-        return OpenAI(api_key=OPENAI_API_KEY)
-    return None
-
-def claude_client():
-    if ANTHROPIC_API_KEY and anthropic:
-        return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    return None
-
-def gemini_client():
-    if GOOGLE_API_KEY and genai:
-        genai.configure(api_key=GOOGLE_API_KEY)
-        return genai
-    return None
-
-def make_card(**kw):
-    c = {"type":"web","title":"","url":"","image":None,"source":"","snippet":""}
-    c.update({k:v for k,v in kw.items() if v is not None})
-    return c
-
-
-# ---------- Google Programmable Search ----------
-GOOGLE_CUSTOM_KEY = os.getenv("GOOGLE_CUSTOM_SEARCH_API_KEY", "")
-GOOGLE_CX         = os.getenv("GOOGLE_SEARCH_ENGINE_ID", "")
-
-def _google_cse_request(params):
-    if not GOOGLE_CUSTOM_KEY or not GOOGLE_CX:
-        return {}
-    url = "https://www.googleapis.com/customsearch/v1"
-    try:
-        r = requests.get(url, params={**params, "key": GOOGLE_CUSTOM_KEY, "cx": GOOGLE_CX}, timeout=12)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return {}
-
-def google_web_results(query, num=6):
-    """Return Droxion link cards from Google web search."""
-    data = _google_cse_request({
-        "q": query, "num": max(1, min(num, 10)), "safe": "active", "gl": "in"
-    })
-    cards = []
-    for item in data.get("items", [])[:num]:
-        pagemap = item.get("pagemap") or {}
-        thumb = ""
-        for key in ("cse_thumbnail", "imageobject", "metatags"):
-            v = pagemap.get(key)
-            if isinstance(v, list) and v and isinstance(v[0], dict):
-                thumb = v[0].get("src") or v[0].get("og:image") or v[0].get("content") or ""
-                if thumb:
-                    break
-        cards.append({
-            "type": "link-card",
-            "title": item.get("title", ""),
-            "subtitle": item.get("displayLink", ""),
-            "text": item.get("snippet", ""),
-            "href": item.get("link", ""),
-            "thumb": thumb,
-            "source": "google",
-        })
-    return cards
-
-def google_image_results(query, num=8):
-    """Return image URLs for a compact grid."""
-    data = _google_cse_request({
-        "q": query, "num": max(1, min(num, 10)), "searchType": "image",
-        "safe": "active", "imgSize": "large"
-    })
-    return [it.get("link") for it in data.get("items", [])[:num] if it.get("link")]
-
-# ========= Health =========
-@app.get("/health")
-def health():
-    return ok({
-        "service":"droxion",
-        "chat": {
-            "openai": bool(OPENAI_API_KEY),
-            "anthropic": bool(ANTHROPIC_API_KEY),
-            "gemini": bool(GOOGLE_API_KEY),
-        },
-        "replicate": bool(REPLICATE_API_TOKEN),
-        "youtube": bool(YOUTUBE_API_KEY),
-    })
-
-
-
-# ========= Suggest (typeahead / followups) =========
-@app.get("/suggest")
-def suggest():
-    q = (request.args.get("q") or "").strip()
-    mode = (request.args.get("mode") or "").strip().lower()
-    sugs = []
-
-    if q:
-        try:
-            j = get_json("https://duckduckgo.com/ac/", params={"q": q})
-            if j and isinstance(j, list):
-                sugs = [x.get("phrase") for x in j if isinstance(x, dict) and x.get("phrase")]
-        except Exception:
-            sugs = []
-
-    if mode == "followup":
-        base = [
-            f"Explain {q} in simple steps",
-            f"Pros & cons of {q}",
-            f"Give an example using {q}",
-            f"What should I do next about {q}?",
-        ]
-        return ok({"suggestions": base[:8]})
-
-    return ok({"suggestions": (sugs or [])[:10]})
-
-
-# ========= History (frontend compatibility) =========
-@app.get("/history")
-def history():
-    return ok({"history": []})
-
-
-@app.post("/history/save")
-def history_save():
-    return ok({"saved": True})
-
-
-# ========= CHAT (fallbacks) =========
-@app.route("/chat", methods=["POST"])
-def chat():
-    """
-    Body: { "messages":[{role,content}], ... } OR { "prompt": "..." }
-    Returns: { ok, reply, model, cards:[] }
-    """
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        msgs = data.get("messages")
-        prompt = data.get("prompt")
-
-        if not msgs and prompt:
-            msgs = [{"role": "user", "content": prompt}]
-
-        if not msgs:
-            return err(400, "messages or prompt required")
-
-        oc = gpt_client()
-        if not oc:
-            return ok({
-                "reply": "Backend is running, but OpenAI API key is not loaded.",
-                "model": "none",
-                "cards": []
-            })
-
-        try:
-            resp = oc.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=msgs,
-                temperature=0.2
-            )
-
-            text = resp.choices[0].message.content
-
-            return ok({
-                "reply": text,
-                "model": "gpt-4o-mini",
-                "cards": []
-            })
-
-        except Exception as e:
-            print("OpenAI ERROR:", str(e))
-            return ok({
-                "reply": f"OpenAI Error: {str(e)}",
-                "model": "error",
-                "cards": []
-            })
-
-    except Exception as e:
-        print("CHAT ERROR:", str(e))
-        return err(500, "server_error", str(e))
-
-
-# ========= News / Weather / Crypto / Images / YouTube =========
-def news_cards(query):
-    import xml.etree.ElementTree as ET
-    q = query or "top news"
-    url = "https://news.google.com/rss/search"
-    params = {"q": q, "hl":"en-US", "gl":"US", "ceid":"US:en"}
-    xmltxt = get_text(url, params=params)
-    out = []
-    try:
-        root = ET.fromstring(xmltxt)
-        for item in root.findall(".//item")[:15]:
-            title = (item.findtext("title") or "").strip()
-            link = (item.findtext("link") or "").strip()
-            pub = (item.findtext("pubDate") or "")
-            out.append(make_card(type="news", title=title, url=link, source="news", time=pub))
-    except Exception:
-        pass
-    return out
-
-def geocode_city(name):
-    j = get_json("https://geocoding-api.open-meteo.com/v1/search", params={"name": name, "count": 1})
-    if j and j.get("results"):
-        r = j["results"][0]
-        return {"name": r.get("name"), "lat": r.get("latitude"), "lon": r.get("longitude"), "country": r.get("country")}
-    return None
-
-def weather_cards(query):
-    city = query.replace("weather","").strip() or "New York"
-    geo = geocode_city(city)
-    if not geo:
-        return [make_card(type="weather", title="Weather", subtitle=f"{city}")]
-    lat, lon = geo["lat"], geo["lon"]
-    j = get_json("https://api.open-meteo.com/v1/forecast", params={
-        "latitude": lat, "longitude": lon,
-        "hourly":"temperature_2m,relative_humidity_2m,wind_speed_10m",
-        "daily":"temperature_2m_max,temperature_2m_min",
-        "current_weather":"true", "timezone":"auto"
-    })
-    if not j:
-        return [make_card(type="weather", title="Weather", subtitle=f"{geo['name']}, {geo['country']}")]
-
-    cw = j.get("current_weather") or {}
-    temp_c = cw.get("temperature")
-    wind_kph = cw.get("windspeed")
-    hours=[]
-    h_t = (j.get("hourly") or {}).get("time") or []
-    h_temp = (j.get("hourly") or {}).get("temperature_2m") or []
-    for t, tc in list(zip(h_t, h_temp))[:8]:
-        hours.append({"time": t, "temp_c": tc})
-
-    daily=[]
-    d_tmax = (j.get("daily") or {}).get("temperature_2m_max") or []
-    d_tmin = (j.get("daily") or {}).get("temperature_2m_min") or []
-    for i in range(min(3, len(d_tmax), len(d_tmin))):
-        daily.append({"day": f"Day {i+1}", "max_c": d_tmax[i], "min_c": d_tmin[i]})
-
-    card = {
-        "type":"weather",
-        "title":"Weather",
-        "subtitle": f"{geo['name']}, {geo['country']}",
-        "temp_c": temp_c, "feels_c": temp_c,
-        "wind_kph": wind_kph, "humidity": None,
-        "hourly": hours, "daily": daily, "icon": None
+// src/AIChat.jsx — Droxion (single + menu, images preserved, no card trimming in messages) — PERFECT FIX
+import React, { useState, useEffect, useRef } from "react";
+import axios from "axios";
+import ReactMarkdown from "react-markdown";
+import rehypeRaw from "rehype-raw";
+import remarkGfm from "remark-gfm";
+import { FaRegCopy } from "react-icons/fa";
+import {
+  FiMoon, FiSun, FiPlus,
+  FiCamera, FiImage, FiFile,
+  FiCpu, FiSearch, FiBook, FiAperture, FiGlobe,
+  FiArrowRight
+} from "react-icons/fi";
+import { Analytics } from "@vercel/analytics/react";  // ✅ Added for Vercel Analytics
+import "./AIChat.css";
+
+const API_BASE = "https://droxion-backend.onrender.com";
+
+// Stable user id for history
+function getUserId() {
+  try {
+    let id = localStorage.getItem("droxion_user_id");
+    if (!id) {
+      id = "u_" + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem("droxion_user_id", id);
     }
-    return [card]
+    return id;
+  } catch { return "anon"; }
+}
+const USER_ID = getUserId();
 
-def crypto_cards(query):
-    coins = ["bitcoin","ethereum","solana"]
-    res = get_json("https://api.coingecko.com/api/v3/coins/markets",
-                   params={"vs_currency":"usd","ids":",".join(coins)})
-    out=[]
-    if res:
-        for c in res:
-            title = c.get("name")
-            url = f"https://www.coingecko.com/en/coins/{c.get('id')}"
-            price = f"${c.get('current_price'):,}"
-            ch = c.get("price_change_percentage_24h")
-            change = f"{(ch or 0):+,.2f}%"
-            out.append({
-                "type":"crypto","title":title,"url":url,"price":price,"change":change,
-                "symbol": (c.get("symbol") or "").upper(),
-                "image": c.get("image"), "source":"CoinGecko"
-            })
-    return out
+// --- Tiny helpers to save/load chat history ---
+async function saveHistory(API_BASE, userId, messages) {
+  try {
+    await axios.post(`${API_BASE}/history/save`, {
+      user_id: userId,
+      messages: messages.map(m => ({
+        role: m.role,
+        text: typeof m.content === "string" ? m.content : (m.content?.toString?.() || "")
+      }))
+    });
+  } catch {}
+}
+async function loadHistory(API_BASE, userId) {
+  try {
+    const r = await axios.get(`${API_BASE}/history`, { params: { user_id: userId } });
+    const hist = r?.data?.history || [];
+    return hist.map(h => ({ role: h.role, content: h.text, time: h.time }));
+  } catch { return []; }
+}
 
-def image_cards(query):
-    q = (query or "wallpaper").replace("images:", "").strip() or "wallpaper"
-    # Primary: Lorem Picsum (stable, no API key). Secondary: LoremFlickr.
-    seeds = [f"{q}-{i}" for i in range(1, 13)]
-    picsum = [f"https://picsum.photos/seed/{requests.utils.quote(s)}/600/400" for s in seeds]
-    flickr = [f"https://loremflickr.com/600/400/{requests.utils.quote(q)}?lock={i}" for i in range(1, 13)]
-    urls = picsum[:6] + flickr[:6]   # a mix to keep variety and avoid thundering herd
-    return [{"type": "images-grid", "images": urls}]
+/* ---------------------- helpers ---------------------- */
+const normHost = (u = "") => {
+  try {
+    const url = new URL(u);
+    if (url.protocol === "blob:" || url.protocol === "data:") return "";
+    return url.hostname.toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+  } catch { return ""; }
+};
+const host = (u) => normHost(u);
+const isBlobUrl = (u = "") => { try { const p = new URL(u).protocol; return p === "blob:" || p === "data:"; } catch { return false; } };
 
-def yt_search(q, max_results=8):
-    if not (YOUTUBE_API_KEY and q):
-        return []
-    try:
-        j = get_json(
-            "https://www.googleapis.com/youtube/v3/search",
-            params={
-                "key": YOUTUBE_API_KEY,
-                "part": "snippet",
-                "q": q,
-                "type": "video",
-                "maxResults": max_results,
-                "safeSearch": "moderate",
-            },
-        ) or {}
-        items = j.get("items") or []
-        cards = []
-        for it in items:
-            sid = it.get("id", {}).get("videoId")
-            sn  = it.get("snippet", {}) or {}
-            title = sn.get("title") or "YouTube"
-            url   = f"https://www.youtube.com/watch?v={sid}" if sid else ""
-            thumb = (sn.get("thumbnails", {}).get("medium")
-                     or sn.get("thumbnails", {}).get("high")
-                     or {}).get("url")
-            cards.append({
-                "type": "youtube",
-                "title": title,
-                "url": url,
-                "image": thumb,
-                "videoId": sid,
-                "source": "YouTube",
-                "snippet": sn.get("description") or "",
-                "publishedAt": sn.get("publishedAt"),
-            })
-        return cards
-    except Exception:
-        return []
+const BAD_HOSTS = ["example.com","example.org"];
+const isFilteredSource = (u="") => { const h = host(u); return !h || BAD_HOSTS.some(b => h===b || h.endsWith("."+b)); };
 
-@app.post("/youtube")
-def youtube_search():
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        q = (data.get("query") or data.get("q") or "").strip()
-        if not q:
-            return ok({"cards": []})
-        return ok({"cards": yt_search(q)})
-    except Exception as e:
-        return err(500, "server_error", e)
-@app.post("/search-youtube")
-def search_youtube_compat():
-    """
-    Compatibility endpoint for the frontend AIChat.jsx which calls /search-youtube with {q}.
-    Returns { results: [{title, url}] } matching the UI’s mapper.
-    """
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        q = (data.get("q") or data.get("query") or "").strip()
-        if not q:
-            return ok({"results": []})
-        cards = yt_search(q)  # same helper your /youtube uses
-        # Frontend maps r.data.results -> {type:'youtube', url, title}
-        results = [{"title": c.get("title") or "YouTube", "url": c.get("url")} for c in cards if c.get("url")]
-        return ok({"results": results})
-    except Exception as e:
-        return err(500, "server_error", e)
-# ========= REALTIME =========
-@app.post("/realtime")
-def realtime():
-    """
-    Body: { query, intent?('news'|'weather'|'crypto'|'images'|'youtube'|...), web? }
-    Returns: { ok, cards:[], markdown? }
-    """
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        q = (data.get("query") or "").strip()
-        intent = (data.get("intent") or "").strip().lower()
+// ⬇️ Keep your original working selector
+const firstImageUrl = (c) =>
+  c?.image_url || c?.image || c?.thumbnail || c?.thumb || c?.thumb_url || c?.ogImage || null;
 
-        cards = []
-        md = None
+const IMAGE_PROXY = `${API_BASE}/img?url=`;
+const toProxy = (u = "") => (!u || isBlobUrl(u) || !/^https?:/i.test(u)) ? u : `${IMAGE_PROXY}${encodeURIComponent(u)}`;
+const unsplash = (q) => (q ? `https://source.unsplash.com/900x600/?${encodeURIComponent(q)}` : null);
+const faviconFor = (u="") => { const h = host(u); return h ? `https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(h)}` : null; };
+const timeAgo = (d) => { if (!d) return ""; const t = typeof d === "string" ? new Date(d).getTime() : +d; if (!t || Number.isNaN(t)) return ""; const s = Math.floor((Date.now()-t)/1000); if (s<60) return `${s}s ago`; const m=Math.floor(s/60); if(m<60) return `${m}m ago`; const h=Math.floor(m/60); if(h<24) return `${h}h ago`; const dd=Math.floor(h/24); return `${dd}d ago`; };
 
-        if intent == "news":
-            cards = news_cards(q)
-            cards += yt_search(q)[:4]  # enrich news with related videos
-            md = f"Top news for **{q or 'today'}**"
+/* small youtube helpers */
+const isYouTube = (raw="") => {
+  try { const u=new URL(raw); const h=u.hostname.replace(/^www\./,""); return h.includes("youtube.com")||h.includes("youtu.be"); } catch { return /youtu\.?be/.test(raw); }
+};
+const youTubeIdFromUrl = (raw="") => {
+  try {
+    const u = new URL(raw);
+    const h = u.hostname.replace(/^www\./, "");
+    if (h.includes("youtube.com")) {
+      const v = u.searchParams.get("v");
+      if (v) return v;
+      const p = u.pathname.split("/").filter(Boolean);
+      if (p[0] === "shorts" || p[0] === "embed") return p[1];
+    }
+    if (h.includes("youtu.be")) {
+      const p = u.pathname.split("/").filter(Boolean);
+      if (p[0]) return p[0];
+    }
+  } catch {}
+  const m = raw && raw.match(/([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : null;
+};
 
-        elif intent == "weather":
-            cards = weather_cards(q)
-            md = f"Weather for **{q or 'your city'}**"
+/* ---------------------- quick intent ---------------------- */
+const wantsImages  = (s="") => { const q=s.trim().toLowerCase(); return /^images?:\s*/.test(q) || /\b(show\s+(me\s+)?)?(images?|photos?|pictures?)\b/.test(q) || /\bwallpaper\b/.test(q); };
+const wantsNews    = (s="") => /\b(news|headlines|latest news|breaking)\b/i.test(s);
+const wantsWeather = (s="") => /\b(weather|temp|temperature|forecast|rain|humidity|wind)\b/i.test(s);
+const wantsCrypto  = (s="") => /\b(crypto|bitcoin|btc|ethereum|eth|price|chart)\b/i.test(s);
+// NEW: YouTube
+const wantsYouTube = (s = "") => /\b(youtube|yt|watch|trailer|music video)\b/i.test(s) || /^youtube:\s*/i.test(s);
 
-        elif intent == "crypto":
-            cards = crypto_cards(q)
-            md = "Crypto prices (CoinGecko)"
+/* ---------------------- ranking for PREVIEW only ---------------------- */
+const HQ = [
+  "forbes.com","bloomberg.com","reuters.com","cnbc.com","apnews.com","ft.com","wsj.com","nytimes.com",
+  "theguardian.com","bbc.com","npr.org","coindesk.com","cointelegraph.com",
+  "finance.yahoo.com","google.com","marketwatch.com","nasdaq.com","sec.gov","wikipedia.org"
+];
+const rankHost = (h) => !h ? -50 : BAD_HOSTS.some(b => h===b || h.endsWith("."+b)) ? -200 : (HQ.some(g => h===g || h.endsWith("."+g)) ? 100 : 10);
+const dedupeCards = (arr=[]) => { const seen=new Set(); return arr.filter(c=>{ const key=(host(c.url||"")||"")+ "::" + (c.title||"").toLowerCase().slice(0,80); if(seen.has(key)) return false; seen.add(key); return true; }); };
+const rankAndTrim = (cards=[], limit=12) => dedupeCards(cards.filter(c => !!c && !!c.url && !isFilteredSource(c.url))).sort((a,b)=> (rankHost(host(b.url||"")) - rankHost(host(a.url||"")))).slice(0, limit);
+const displaySource = (c) => host(c?.url || "") || (c?.source || "").replace(/\s+[-–]\s+.*/,"");
 
-        elif intent == "images":
-            cards = image_cards(q)
-            md = f"Images for **{q or 'wallpaper'}**"
+const bestPreview = (card, allowFallback=false) => {
+  const direct = firstImageUrl(card);
+  if (direct) return { prox: direct, orig: direct, title: card.title || card.source || "preview" };
+  if (!allowFallback) return null;
+  if (card.url && !isFilteredSource(card.url)) {
+    const shot = `https://image.thum.io/get/width/1200/noanimate/${encodeURIComponent(card.url)}`;
+    return { prox: shot, orig: card.url, title: card.title || "preview" };
+  }
+  const ph = unsplash(card.title || card.source || "news");
+  return ph ? { prox: ph, orig: ph, title: card.title || "preview" } : null;
+};
 
-        elif intent == "youtube":
-            cards = yt_search(q)
-            md = f"YouTube results for **{q}**"
+/* ---------------------- Weather card ---------------------- */
+function WeatherCard({ card }) {
+  if (!card) return null;
+  const pick = (o,ks,d=null)=>{ for(const k of ks) if(o && o[k]!=null && o[k] !== "") return o[k]; return d; };
+  const T = (()=>{ const c=card.temp_c, f=card.temp_f; if(typeof c==="number"&&typeof f==="number") return `${Math.round(c)}°C / ${Math.round(f)}°F`; if(typeof c==="number") return `${Math.round(c)}°C`; if(typeof f==="number") return `${Math.round(f)}°F`; return ""; })();
+  const FEELS = (()=>{ const c=card.feels_c, f=card.feels_f; if(typeof c==="number"&&typeof f==="number") return `${Math.round(c)}°C / ${Math.round(f)}°F`; if(typeof c==="number") return `${Math.round(c)}°C`; if(typeof f==="number") return `${Math.round(f)}°F`; return ""; })();
+  const WIND = (()=>{ const k=card.wind_kph, m=card.wind_mph; if(typeof k==="number"&&typeof m==="number") return `${Math.round(k)} km/h • ${Math.round(m)} mph`; if(typeof k==="number") return `${Math.round(k)} km/h`; if(typeof m==="number") return `${Math.round(m)} mph`; return "";})();
+  const RH = (typeof card.humidity === "number") ? `${Math.round(card.humidity)}%` : "";
+  const RAIN = (card.precip != null && card.precip !== "") ? `${card.precip}${typeof card.precip === "number" ? " mm" : ""}` : "";
+  const hourLabel = (ts)=>{ try{ const d=new Date(ts); let h=d.getHours(); const am=h<12; h=h%12||12; return `${h}${am?"am":"pm"}`;}catch{return"";} };
+  const hrs=(card.hourly||[]).slice(0,8).map(h=>({ t:pick(h,["time","ts","timestamp","date"]), icon:pick(h,["icon","icon_url","image"]), c:pick(h,["temp_c","tempC","temperature_c","temperatureC","temp"]), f:pick(h,["temp_f","tempF","temperature_f","temperatureF"]), text:pick(h,["text","condition","desc"]) }));
+  const days=(card.daily||[]).slice(0,3).map(d=>({ day:pick(d,["day","name","weekday","label"]), icon:pick(d,["icon","icon_url","image"]), min_c:pick(d,["min_c","minC","low_c","lowC","min"]), min_f:pick(d,["min_f","minF","low_f","lowF"]), max_c:pick(d,["max_c","maxC","high_c","highC","max"]), max_f:pick(d,["max_f","maxF","high_f","highF"]), text:pick(d,["text","condition","desc"]) }));
 
-        else:
-            cards = news_cards(q)[:6] + crypto_cards(q)[:3] + yt_search(q)[:2]
-            md = f"Results for **{q}**"
+  return (
+    <div className="weather-card glass rounded-xl p-3">
+      <div className="flex items-center gap-3">
+        {card.icon && <img src={card.icon} alt="" className="w-12 h-12 rounded-md bg-white/5 border border-white/10 object-contain" loading="lazy" referrerPolicy="no-referrer" />}
+        <div className="min-w-0">
+          <div className="text-sm font-semibold truncate">{card.title || "Weather"}</div>
+          <div className="text-xs text-gray-400 truncate">{card.subtitle || ""}</div>
+        </div>
+      </div>
+      {(T || FEELS || RH || WIND || RAIN) && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3 text-xs">
+          {T     && <div className="wstat"><div className="wlabel">Temperature</div><div className="wval">{T}</div></div>}
+          {FEELS && <div className="wstat"><div className="wlabel">Feels like</div><div className="wval">{FEELS}</div></div>}
+          {RH    && <div className="wstat"><div className="wlabel">Humidity</div><div className="wval">{RH}</div></div>}
+          {WIND  && <div className="wstat"><div className="wlabel">Wind</div><div className="wval">{WIND}</div></div>}
+          {RAIN  && <div className="wstat"><div className="wlabel">Precip</div><div className="wval">{RAIN}</div></div>}
+        </div>
+      )}
+      {hrs.length>0 && (
+        <div className="mt-3">
+          <div className="text-[11px] text-gray-400 mb-1">Next hours</div>
+          <div className="w-hscroll flex gap-8 overflow-x-auto -mx-1 px-1 pb-1">
+            {hrs.map((h,i)=>(
+              <div key={i} className="w-hour glass rounded-lg p-2 min-w-[86px] text-center">
+                <div className="text-[11px] text-gray-400">{h.t ? hourLabel(h.t) : (h.text || "").split(" ")[0]}</div>
+                {h.icon && <img src={h.icon} alt="" className="mx-auto my-1 h-8 w-8 object-contain" loading="lazy" referrerPolicy="no-referrer" />}
+                <div className="text-sm font-semibold">{(()=>{
+                  const c=h.c, f=h.f;
+                  if(typeof c==="number" && typeof f==="number") return `${Math.round(c)}°C / ${Math.round(f)}°F`;
+                  if(typeof c==="number") return `${Math.round(c)}°C`;
+                  if(typeof f==="number") return `${Math.round(f)}°F`;
+                  return "-";
+                })()}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {days.length>0 && (
+        <div className="mt-3">
+          <div className="text-[11px] text-gray-400 mb-1">Next days</div>
+          <div className="grid grid-cols-3 gap-2">
+            {days.map((d,i)=>(
+              <div key={i} className="glass rounded-lg p-2 text-center">
+                <div className="text-[11px] text-gray-400 truncate">{d.day || `Day ${i+1}`}</div>
+                {d.icon && <img src={d.icon} alt="" className="mx-auto my-1 h-8 w-8 object-contain" loading="lazy" referrerPolicy="no-referrer" />}
+                <div className="text-xs font-semibold">
+                  {(()=>{
+                    const c=d.max_c, f=d.max_f, lc=d.min_c, lf=d.min_f;
+                    const hi = (typeof c==="number"&&typeof f==="number")?`${Math.round(c)}°C / ${Math.round(f)}°F`: (typeof c==="number")?`${Math.round(c)}°C`:(typeof f==="number")?`${Math.round(f)}°F`:"";
+                    const lo = (typeof lc==="number"&&typeof lf==="number")?`${Math.round(lc)}°C / ${Math.round(lf)}°F`: (typeof lc==="number")?`${Math.round(lc)}°C`:(typeof lf==="number")?`${Math.round(lf)}°F`:"";
+                    return `${hi} / ${lo}`;
+                  })()}
+                </div>
+                {d.text && <div className="text-[11px] text-gray-500 mt-1 line-clamp-2">{d.text}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+/* ---------------------- Tools Menu (single + menu) ---------------------- */
+function ToolsMenu({
+  onSendImageFile,
+  onSendAnyFile,
+  onToggleAgent, agentOn,
+  onDeepResearch,
+  onSetPersona,
+  onCreateImage,
+  webSearchOn, onToggleWebSearch,
+  onClearAll,
+  onNewChat,
+  onClose
+}) {
+  const camRef = useRef(null);
+  const photosRef = useRef(null);
+  const filesRef = useRef(null);
 
-        # --- Google Web Results ---
-        web_cards = google_web_results(q, num=6)
-        if web_cards:
-            cards.extend(web_cards)
+  // ❌ Do NOT close the menu before the picker returns (iOS)
+  const pickCamera = () => camRef.current?.click();
+  const pickPhotos = () => photosRef.current?.click();
+  const pickFiles  = () => filesRef.current?.click();
 
-        # --- Google Image Results (grid) ---
-        img_urls = google_image_results(q, num=8)
-        if img_urls:
-            cards.append({"type": "images-grid", "images": img_urls})
+  const handleCamFile = (e) => {
+    const f = e.target.files?.[0];
+    if (f) onSendImageFile?.(f, { source: "camera" });
+    e.target.value = "";
+    onClose?.(); // ✅ close AFTER file is chosen
+  };
+  const handlePhotoFile = (e) => {
+    const f = e.target.files?.[0];
+    if (f) onSendImageFile?.(f, { source: "photos" });
+    e.target.value = "";
+    onClose?.(); // ✅ close AFTER file is chosen
+  };
+  const handleAnyFile = (e) => {
+    const f = e.target.files?.[0];
+    if (f) onSendAnyFile?.(f);
+    e.target.value = "";
+    onClose?.(); // ✅ close AFTER file is chosen
+  };
 
-        return ok({"cards": cards, "markdown": md})
+  // safe wrapper ONLY for non-file actions
+  const wrap = (fn) => () => { try { fn?.(); } finally { onClose?.(); } };
 
-    except Exception as e:
-        return err(500, "server_error", e)
+  return (
+    <div className="menu-panel">
+      {/* hidden inputs (must remain mounted while picker is open) */}
+      <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleCamFile} />
+      <input ref={photosRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoFile} />
+      <input ref={filesRef} type="file" className="hidden" onChange={handleAnyFile} />
 
-# ========= SEARCH (Wikipedia-first) =========
-@app.post("/search")
-def search():
-    """
-    Body: { prompt, web? }
-    Returns: { ok, results:[{title,url,image,source,snippet}] }
-    """
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        prompt = (data.get("prompt") or "").strip()
-        if not prompt:
-            return ok({"results":[]})
+      <button className="menu-item" onClick={pickCamera}><FiCamera className="icon" /><span>Camera</span></button>
+      <button className="menu-item" onClick={pickPhotos}><FiImage className="icon" /><span>Photos</span></button>
+      <button className="menu-item" onClick={pickFiles}><FiFile className="icon" /><span>Files</span></button>
 
-        sj = get_json("https://en.wikipedia.org/w/api.php", params={
-            "action":"query","list":"search","format":"json","srlimit":10,"srsearch": prompt
-        }) or {}
-        results=[]
-        for it in (sj.get("query",{}).get("search") or []):
-            title = it.get("title")
-            page = f"https://en.wikipedia.org/wiki/{title.replace(' ','_')}"
-            snippet = (it.get("snippet","")
-                       .replace('<span class="searchmatch">',"")
-                       .replace("</span>",""))
-            results.append({"title": title, "url": page, "image": None, "source":"wikipedia.org", "snippet": snippet})
-        return ok({"results": results})
-    except Exception as e:
-        return err(500, "server_error", e)
+      <hr className="menu-sep" />
 
-# ========= DEEPSEARCH (light) =========
-@app.post("/deepsearch")
-def deepsearch():
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        q = (data.get("q") or "").strip()
-        cards = news_cards(q)[:6] + crypto_cards(q)[:2] + yt_search(q)[:2]
-        summary = f"**Summary for “{q}”**\n\n- Collected headlines, videos, and market context.\n- Tap any card to open.\n- Ask for deeper analysis on any item."
-        return ok({"answer": summary, "cards": cards})
-    except Exception as e:
-        return err(500, "server_error", e)
+      <button className={`menu-item ${agentOn ? "active":""}`} onClick={wrap(onToggleAgent)}><FiCpu className="icon" /><span>Agent mode {agentOn?"On":"Off"}</span></button>
+      <button className="menu-item" onClick={wrap(onDeepResearch)}><FiSearch className="icon" /><span>Deep research</span></button>
+      <button className="menu-item" onClick={wrap(() => onSetPersona?.("teacher"))}><FiBook className="icon" /><span>Study &amp; learn</span></button>
+      <button className="menu-item" onClick={wrap(onCreateImage)}><FiAperture className="icon" /><span>Create image</span></button>
+      <button className={`menu-item ${webSearchOn ? "active":""}`} onClick={wrap(onToggleWebSearch)}><FiGlobe className="icon" /><span>Web search {webSearchOn?"On":"Off"}</span></button>
 
-# ========= ANALYZE IMAGE (multipart) =========
-@app.post("/analyze-image")
-def analyze_image():
-    """
-    Multipart form:
-      image: <file>, prompt?, agent?, web?, persona?
-    Returns: { ok, ai_description|summary|reply, cards:[{type:'gallery',images:[dataurl]}], vision_used:bool }
-    """
-    try:
-        if "image" not in request.files:
-            return err(400, "image file required")
-        f = request.files["image"]
-        blob = f.read()
-        mime = f.mimetype or mimetypes.guess_type(f.filename)[0] or "image/jpeg"
-        durl = dataurl(blob, mime)
+      <hr className="menu-sep" />
 
-        prompt = request.form.get("prompt") or "Describe this image in detail and list notable elements."
-        description = "Here’s what I see: a photo with notable colors, subjects, and composition."
+      <button className="menu-item" onClick={wrap(onNewChat)}><FiPlus className="icon" /><span>New chat</span></button>
+      <button className="menu-item danger" onClick={wrap(onClearAll)}><span>Clear chat + memory</span></button>
+    </div>
+  );
+}
 
-        # If OpenAI Vision available, try it
-        tried_vision = False
-        if OPENAI_API_KEY and OpenAI:
-            try:
-                tried_vision = True
-                oc = OpenAI(api_key=OPENAI_API_KEY)
-                vision = oc.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role":"system","content":"Be concise but specific."},
-                        {"role":"user","content":[
-                            {"type":"text","text": prompt},
-                            {"type":"image_url","image_url":{"url": durl}}
-                        ]}
-                    ]
+/* ---------------------- Organized answer renderer ---------------------- */
+const extractTitle = (md="") => {
+  const h1 = md.match(/^\s*#\s+(.+)/m); if (h1) return h1[1].trim();
+  const firstLine = md.split("\n").find(x => x.trim()); if (!firstLine) return "Answer";
+  const s = firstLine.replace(/[*_#>]+/g,"").trim();
+  const end = s.indexOf(". ") >= 0 ? s.indexOf(". ") + 1 : Math.min(90, s.length);
+  return s.slice(0,end).trim();
+};
+const extractSummary = (md="") => {
+  const lines = md.split("\n").map(l=>l.trim()).filter(Boolean);
+  const bullets = lines.filter(l => /^[-*•]\s+/.test(l)).slice(0,3).map(l => l.replace(/^[-*•]\s+/, ""));
+  if (bullets.length>=2) return bullets;
+  const para = lines.find(l => /^[A-Za-z0-9]/.test(l)); if (!para) return [];
+  return para.split(/(?<=[.!?])\s+/).slice(0,3);
+};
+const extractSteps = (md="") => {
+  const blocks = md.split("\n");
+  const numbered = blocks.filter(l => /^\d+\.\s+/.test(l)).slice(0,10).map(l => l.replace(/^\d+\.\s+/,""));
+  if (numbered.length) return numbered;
+  const dots = blocks.filter(l => /^[-*•]\s+/.test(l)).slice(0,6).map(l => l.replace(/^[-*•]\s+/, ""));
+  return dots;
+};
+const OrganizedAnswer = ({ md }) => {
+  const title = extractTitle(md);
+  const summary = extractSummary(md);
+  const steps = extractSteps(md);
+  return (
+    <>
+      <div className="org-title">{title}</div>
+      {summary.length>0 && (<div className="org-section"><div className="org-sub">Summary</div><ul className="org-list">{summary.map((s,i)=><li key={i}>{s}</li>)}</ul></div>)}
+      {steps.length>0 && (<div className="org-section"><div className="org-sub">Step-by-step</div><ol className="org-steps">{steps.map((s,i)=><li key={i}>{s}</li>)}</ol></div>)}
+      <div className="org-section">
+        <div className="org-sub">Full answer</div>
+        <div className="answer expanded">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}
+            components={{
+              img: (props) => {
+                const src = props.src || "";
+                return (
+                  <img {...props} src={src} className="rounded-lg my-2 w-full glass" loading="lazy" referrerPolicy="no-referrer"
+                    onError={(e)=>{ const el=e.currentTarget; const step=el.dataset.step||"orig";
+                      if(step==="orig"){ el.dataset.step="proxy"; el.src = toProxy(src); return; }
+                      if(step==="proxy"){ el.dataset.step="fallback"; el.src = unsplash("image"); return; }
+                      el.style.display="none"; }} />
+                );
+              },
+              iframe: (p) => <div className="embed-responsive embed-16by9 rounded overflow-hidden my-2 glass"><iframe {...p} allowFullScreen /></div>,
+              a: ({node, ...p}) => <a {...p} className="underline decoration-gray-600 hover:text-gray-200" target="_blank" rel="noreferrer" />,
+              code: ({node, inline, className, children, ...p}) => inline
+                ? <code className={className} {...p}>{children}</code>
+                : <pre className={className} style={{ position:"relative" }}>
+                    <button className="code-copy-btn" onClick={() => navigator.clipboard.writeText(String(children || ""))} title="Copy code">Copy</button>
+                    <code {...p}>{children}</code>
+                  </pre>,
+            }}
+          >
+            {md}
+          </ReactMarkdown>
+        </div>
+      </div>
+    </>
+  );
+};
+/* ---------------------- Media block (images, youtube, weather, google) ---------------------- */
+function MediaBlock({ cards = [] }) {
+  if (!cards || cards.length === 0) return null;
+
+  return (
+    <div className="grid grid-cols-1 gap-8 mt-3">
+      {cards.map((card, i) => {
+        // Images grid (array of urls or {url})
+        if (card?.type === "images-grid" && Array.isArray(card.images)) {
+          const items = card.images.slice(0, 12);
+          return (
+            <div key={`img-grid-${i}`} className="grid grid-cols-2 gap-2">
+              {items.map((it, j) => {
+                const u = typeof it === "string" ? it : (it?.url || "");
+                if (!u) return null;
+                return (
+                  <a key={`img-${i}-${j}`} href={u} target="_blank" rel="noreferrer" className="block">
+                    <img
+                      src={`${API_BASE}/img?url=${encodeURIComponent(u)}`}
+                      alt=""
+                      className="w-full rounded-lg glass"
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => { e.currentTarget.style.display = "none"; }}
+                    />
+                  </a>
+                );
+              })}
+            </div>
+          );
+        }
+
+        // Gallery
+        if (card?.type === "gallery" && Array.isArray(card.images)) {
+          const urls = card.images
+            .map((it) => (typeof it === "string" ? it : (it?.url || it?.thumbnail || it?.thumb)))
+            .filter(Boolean)
+            .slice(0, 12);
+          return (
+            <div key={`gallery-${i}`} className="grid grid-cols-2 gap-2">
+              {urls.map((u, j) => (
+                <img
+                  key={`gal-${i}-${j}`}
+                  src={`${API_BASE}/img?url=${encodeURIComponent(u)}`}
+                  alt=""
+                  className="w-full rounded-lg glass"
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => { e.currentTarget.style.display = "none"; }}
+                />
+              ))}
+            </div>
+          );
+        }
+
+        // Single image card
+        if (card?.type === "image" && card.url) {
+          return (
+            <img
+              key={`image-${i}`}
+              src={`${API_BASE}/img?url=${encodeURIComponent(card.url)}`}
+              alt=""
+              className="w-full rounded-lg glass"
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              onError={(e) => { e.currentTarget.style.display = "none"; }}
+            />
+          );
+        }
+
+        // Weather
+        if (card?.type === "weather") {
+          return <WeatherCard key={`wx-${i}`} card={card} />;
+        }
+
+        // YouTube
+        if (card?.type === "youtube" || (card?.url && isYouTube(card.url))) {
+          const id = youTubeIdFromUrl(card.url || "");
+          if (!id) return null;
+          return (
+            <div key={`yt-${i}`} className="embed-responsive embed-16by9 rounded overflow-hidden glass" style={{ maxHeight: 280 }}>
+              <iframe
+                src={`https://www.youtube.com/embed/${id}`}
+                title={card.title || "YouTube"}
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+              />
+            </div>
+          );
+        }
+
+        // Google web result (link-card)
+        if (card?.type === "link-card") {
+          return (
+            <a
+              key={`lnk-${i}`}
+              href={card.href || card.url || "#"}
+              target="_blank"
+              rel="noreferrer"
+              className="block rounded-lg p-3 bg-[var(--glass)] hover:bg-[var(--hover)] transition"
+            >
+              {/* thumbnail if available */}
+              {card.thumb && (
+                <img
+                  src={`${API_BASE}/img?url=${encodeURIComponent(card.thumb)}`}
+                  alt=""
+                  className="w-full rounded mb-2 object-cover linkcard-thumb"
+                  loading="lazy"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => { e.currentTarget.style.display = "none"; }}
+                />
+              )}
+
+              {/* favicon + domain */}
+              <div className="flex items-center gap-2 text-xs opacity-70 mb-1">
+                {card.favicon && (
+                  <img
+                    src={card.favicon}
+                    alt=""
+                    className="w-4 h-4 rounded"
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => { e.currentTarget.style.display = "none"; }}
+                  />
+                )}
+                <span>{card.subtitle || card.source || "Google"}</span>
+              </div>
+
+              {/* title + snippet */}
+              <div className="font-semibold leading-snug">{card.title}</div>
+              {card.text && (
+                <p className="text-sm opacity-80 mt-1 line-clamp-3">{card.text}</p>
+              )}
+            </a>
+          );
+        }
+
+        // Fallback: any card with an image
+        const anySrc = firstImageUrl(card);
+        if (anySrc) {
+          const href = card.url || anySrc;
+          return (
+            <a key={`img-any-${i}`} href={href} target="_blank" rel="noreferrer" className="block">
+              <img
+                src={`${API_BASE}/img?url=${encodeURIComponent(anySrc)}`}
+                alt=""
+                className="w-full rounded-lg glass"
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                onError={(e) => { e.currentTarget.style.display = "none"; }}
+              />
+            </a>
+          );
+        }
+
+        return null;
+      })}
+    </div>
+  );
+}
+
+/* ---------------------- main component ---------------------- */
+function AIChat() {
+  // chat + ui
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [typing] = useState(false);
+
+  // live preview
+  const [focused, setFocused] = useState(false);
+  const [textSug, setTextSug] = useState([]);
+  const [news, setNews] = useState([]);
+  const [weather, setWeather] = useState(null);
+  const [crypto, setCrypto] = useState([]);
+
+  // toggles
+  const [theme, setTheme] = useState(() => localStorage.getItem("drox.theme") || "dark");
+  const [agentOn, setAgentOn] = useState(false);
+  const [webSearchOn, setWebSearchOn] = useState(true);
+  const [persona, setPersona] = useState("");
+
+  const inputRef = useRef(null);
+  const scrollRef = useRef(null);
+  const suggestTimer = useRef(null);
+  const previewTimer = useRef(null);
+  const cancelPrev = useRef({ cancel: () => {} });
+
+  const STORAGE_KEY = "droxion.chat.v1";
+  const MEM_KEY = "droxion.mem.v1";
+
+  // restore & persist chat
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      if (Array.isArray(saved) && saved.length) setMessages(saved);
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-50))); } catch {}
+  }, [messages]);
+  useEffect(() => { localStorage.setItem("drox.theme", theme); document.documentElement.dataset.theme = theme; }, [theme]);
+
+  // load server history on mount (only if empty)
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const old = await loadHistory(API_BASE, USER_ID);
+      if (!mounted || !old.length) return;
+      setMessages(prev => (prev && prev.length ? prev : old.slice(-50)));
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  // keyboard-safe viewport
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const handleVV = () => {
+      if (!vv) return;
+      const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty("--kb", kb + "px");
+    };
+    handleVV();
+    vv?.addEventListener("resize", handleVV);
+    vv?.addEventListener("scroll", handleVV);
+    window.addEventListener("orientationchange", handleVV);
+    return () => {
+      vv?.removeEventListener("resize", handleVV);
+      vv?.removeEventListener("scroll", handleVV);
+      window.removeEventListener("orientationchange", handleVV);
+    };
+  }, []);
+
+  /* ---------------------- visit ping (DAU/WAU/MAU) ---------------------- */
+useEffect(() => {
+  try {
+    const uid = getUserId(); // your existing stable localStorage id
+    axios.post(`${API_BASE}/track`, {
+      type: "visit",
+      user_id: uid,
+      page: "AIChat",
+      time: new Date().toISOString()
+    }).catch(() => {});
+  } catch {}
+}, []);
+
+/* ---------------------- suggestions + live previews ---------------------- */
+useEffect(() => {
+  const q = (input || "").trim();
+  clearTimeout(suggestTimer.current);
+  if (!focused || q.length < 1) { setTextSug([]); return; }
+  suggestTimer.current = setTimeout(async () => {
+    try {
+      const { data } = await axios.get(`${API_BASE}/suggest`, { params: { q } });
+      setTextSug((data?.suggestions || []).slice(0, 8));
+    } catch { setTextSug([]); }
+  }, 250);
+  return () => clearTimeout(suggestTimer.current);
+}, [input, focused]);
+
+useEffect(() => {
+  const q = (input || "").trim();
+  clearTimeout(previewTimer.current);
+  if (!focused || q.length < 1) return;
+  cancelPrev.current.cancel?.();
+  const src = axios.CancelToken.source();
+  cancelPrev.current = { cancel: () => src.cancel("new query") };
+  previewTimer.current = setTimeout(async () => {
+    try {
+      const reqs = [
+        axios.post(`${API_BASE}/realtime`, { query: q, intent: "news"   }, { cancelToken: src.token }).catch(()=>null),
+        axios.post(`${API_BASE}/realtime`, { query: q, intent: "weather"}, { cancelToken: src.token }).catch(()=>null),
+        axios.post(`${API_BASE}/realtime`, { query: q, intent: "crypto" }, { cancelToken: src.token }).catch(()=>null),
+      ];
+      const [rn, rw, rc] = await Promise.all(reqs);
+
+      const newsRanked = rankAndTrim(
+        (rn?.data?.cards || []).filter(Boolean).map(c => ({ ...c, image: firstImageUrl(c) || c.image, type: c.type || "news" })), 10
+      ).filter(c => !!bestPreview(c, true));
+      setNews(newsRanked);
+
+      const wcards = (rw?.data?.cards || []).filter(Boolean);
+      const w = wcards.find((c)=>c.type==="weather") || wcards[0] || null;
+      setWeather(w || null);
+
+      setCrypto((rc?.data?.cards || []).filter(Boolean).slice(0,6));
+    } catch {}
+  }, 350);
+  return () => clearTimeout(previewTimer.current);
+}, [input, focused]);
+
+useEffect(() => {
+  const uid = getUserId();
+  axios.post(`${API_BASE}/track`, {
+    type: "visit",
+    user_id: uid,
+    page: "AIChat",
+    time: new Date().toISOString()
+  })
+  .then(r => console.log("track ok", r.status))
+  .catch(e => console.log("track fail", e?.response?.status, e?.message));
+}, []);
+  /* ---------------------- chat helpers ---------------------- */
+  const copyMessage = async (i) => {
+    try { const msg = messages[i]; if (msg) await navigator.clipboard.writeText(msg.content || ""); } catch {}
+  };
+  const fetchFollowups = async (q) => {
+    try {
+      const { data } = await axios.get(`${API_BASE}/suggest`, { params: { q, mode: "followup" } });
+      const arr = (data?.suggestions || []).filter(Boolean);
+      return (arr.length ? arr : ["Explain more","Pros & cons","Give steps"]).slice(0,3);
+    } catch { return ["Explain more","Pros & cons","Give steps"]; }
+  };
+  const pushWithFollowups = async (md, cards, q, meta={}) => {
+    setMessages((p) => [...p, { role: "assistant", content: md, cards, meta }]);
+    const followups = await fetchFollowups(q);
+    setMessages((p) => {
+      const last = p[p.length-1]; if (!last || last.role!=="assistant") return p;
+      const copy = [...p]; copy[copy.length-1] = { ...last, followups }; return copy;
+    });
+  };
+
+  /* ---------------------- send handlers ---------------------- */
+  const handleSend = async (text = input) => {
+    const content = (text || "").trim(); if (!content) return;
+    setMessages((p) => [...p, { role: "user", content }]);
+    setInput(""); setTextSug([]);
+
+    try {
+      const lower = content.toLowerCase();
+
+      // 🔥 IMAGES
+      if (wantsImages(content)) {
+        let cards = [];
+        try {
+          const r = await axios.post(`${API_BASE}/realtime`, { query: content, intent: "images", web: webSearchOn });
+          cards = (r.data?.cards || []).filter(Boolean);
+        } catch {}
+        const hasImages =
+          cards.some(c =>
+            c?.type === "gallery" || c?.type === "image" || c?.type === "images-grid" ||
+            firstImageUrl(c) || (Array.isArray(c?.images) && c.images.length)
+          );
+        if (!hasImages) {
+          const q = content.replace(/^images?:\s*/i, "").trim() || "wallpaper";
+          const urls = Array.from({ length: 10 }).map((_, i) =>
+            toProxy(`https://source.unsplash.com/600x400/?${encodeURIComponent(q)}&sig=${i + 1}`)
+          );
+          cards = [{ type: "images-grid", images: urls }];
+        }
+        await pushWithFollowups(`Here are some images. Tap any card to open.`, cards, content, { suppressSources: true });
+        return;
+      }
+
+      // 🔥 YOUTUBE
+      if (wantsYouTube(content)) {
+        const q = content.replace(/^youtube:\s*/i, "");
+        let results = [];
+        try {
+          const r = await axios.post(`${API_BASE}/search-youtube`, { q });
+          results = Array.isArray(r.data?.results) ? r.data.results : [];
+        } catch (e) {
+          try {
+            const r2 = await axios.post(`${API_BASE}/realtime`, { query: q || content, intent: "youtube" });
+            results = Array.isArray(r2.data?.results) ? r2.data.results : (r2.data?.cards || []);
+          } catch {}
+        }
+        const cards = (results || [])
+          .map(v => ({ type: "youtube", url: v.url || v.link, title: v.title }))
+          .filter(v => v.url)
+          .slice(0, 6);
+        await pushWithFollowups(cards.length ? "Top YouTube videos:" : `Error or connection failed.`, cards, content, { suppressSources: true });
+        return;
+      }
+
+      // Special routes
+      if (lower.startsWith("google:")) {
+        const q = content.replace(/^google:\s*/i, "");
+        const r = await axios.post(`${API_BASE}/realtime`, { query: q, web: webSearchOn });
+        const cards = (r.data?.cards || []).filter(Boolean);
+        const md = r.data?.markdown || r.data?.summary || `Results for **${q}**`;
+        await pushWithFollowups(md, cards, content);
+        return;
+      }
+      if (lower.startsWith("search:")) {
+        const q = content.replace(/^search:\s*/i, "");
+        const r = await axios.post(`${API_BASE}/search`, { prompt: q, web: webSearchOn });
+        const cards = (r.data?.results || []).filter(Boolean).map(it => ({
+          type:"web", title: it.title, url: it.url, image: it.image || null, source: it.source, snippet: it.snippet
+        }));
+        await pushWithFollowups(cards.length ? `### Sources for **${q}**` : `No sources found for **${q}**.`, cards, content);
+        return;
+      }
+      if (wantsNews(content)) {
+        const r = await axios.post(`${API_BASE}/realtime`, { query: content, intent: "news", web: webSearchOn });
+        const cards = (r.data?.cards || []).filter(Boolean);
+        await pushWithFollowups((r?.data?.markdown || "Top news:"), cards, content);
+        return;
+      }
+      if (wantsWeather(content)) {
+        const r = await axios.post(`${API_BASE}/realtime`, { query: content, intent: "weather" });
+        const cards = (r.data?.cards || []).filter(Boolean);
+        await pushWithFollowups(r.data?.markdown || "Weather:", cards, content);
+        return;
+      }
+      if (wantsCrypto(content)) {
+        const r = await axios.post(`${API_BASE}/realtime`, { query: content, intent: "crypto", web: webSearchOn });
+        const cards = (r.data?.cards || []).filter(Boolean);
+        await pushWithFollowups(r.data?.markdown || "Crypto:", cards, content);
+        return;
+      }
+
+      // ---- default chat ----
+      let savedMessages = [];
+      try {
+        savedMessages = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      } catch {
+        savedMessages = [];
+      }
+
+      const sourceMessages = messages.length ? messages : savedMessages;
+
+      const conversationMessages = [
+        ...sourceMessages
+          .filter(m => m && typeof m.content === "string" && m.content.trim())
+          .slice(-12)
+          .map(m => ({
+            role: m.role === "assistant" ? "assistant" : "user",
+            content: m.content
+          })),
+        { role: "user", content }
+      ];
+
+      console.log("SENDING MEMORY:", conversationMessages);
+
+      const res = await axios.post(`${API_BASE}/chat`, {
+        messages: conversationMessages,
+        prompt: content,
+        memory: [],
+        persona,
+        web: webSearchOn,
+        agent: agentOn,
+        user_id: USER_ID
+      });
+
+      const md = res.data?.reply || res.data?.text || "";
+      let cards = (res.data?.cards || []).filter(Boolean);
+
+      // optional arrays → map into cards so MediaBlock can render them
+      if (Array.isArray(res.data?.images) && res.data.images.length) {
+        const urls = res.data.images
+          .map(u => (typeof u === "string" ? u : (u?.url || u?.thumbnail || u?.thumb)))
+          .filter(Boolean);
+        if (urls.length) cards = [...cards, { type: "images-grid", images: urls.map(toProxy) }];
+      }
+      if (Array.isArray(res.data?.youtubeResults) && res.data.youtubeResults.length) {
+        cards = [
+          ...cards,
+          ...res.data.youtubeResults
+            .map(v => ({ type: "youtube", url: v.url || v.link, title: v.title }))
+            .filter(v => v.url)
+            .slice(0, 6)
+        ];
+      }
+
+      // push to UI
+      await pushWithFollowups(md, cards, content, { from: "chat" });
+
+      // persist this turn to history
+      await saveHistory(API_BASE, USER_ID, [
+        { role: "user", content },
+        { role: "assistant", content: md }
+      ]);
+
+      // prefer server-provided followups if present
+      const serverFollowups = Array.isArray(res.data?.followups) ? res.data.followups.slice(0, 3) : [];
+      if (serverFollowups.length) {
+        setMessages(prev => {
+          const copy = [...prev];
+          const last = copy[copy.length - 1];
+          if (last?.role === "assistant") copy[copy.length - 1] = { ...last, followups: serverFollowups };
+          return copy;
+        });
+      }
+    } catch (err) {
+      console.error("handleSend error:", err?.message || err);
+      await pushWithFollowups("Error or connection failed.", [], content, {suppressSources:true});
+    }
+  };
+
+  /* ---------------------- Image uploader ---------------------- */
+  const sendImageForAnalysis = async (file) => {
+    if (!file) return;
+    if (!/^image\//.test(file.type)) {
+      await pushWithFollowups("Please pick an image file (JPG/PNG/WEBP).", [], "not image", { suppressSources: true });
+      return;
+    }
+    let localUrl = "";
+    try { localUrl = URL.createObjectURL(file); } catch {}
+
+    const tempMsg = {
+      role: "assistant",
+      content: "Analyzing your image...",
+      cards: localUrl ? [{ type: "gallery", images: [localUrl] }] : [],
+      meta: { suppressSources: true, localPreview: true }
+    };
+    setMessages((prev) => [...prev, tempMsg]);
+    const index = messages.length + 1;
+
+    try {
+      const form = new FormData();
+      form.append("image", file);
+      form.append("prompt", input || "Analyze this image and explain key details.");
+      form.append("agent", String(agentOn));
+      form.append("web", String(webSearchOn));
+      form.append("persona", persona);
+
+      const r = await axios.post(`${API_BASE}/analyze-image`, form, { headers: { "Content-Type": "multipart/form-data" } });
+
+      const md = r.data?.ai_description || r.data?.summary || r.data?.reply || "Image analyzed.";
+      const cards = Array.isArray(r.data?.cards) ? r.data.cards.filter(Boolean) : [];
+      const backendHasImage = cards.some((c) =>
+        c?.type === "gallery" || c?.type === "image" || Boolean(firstImageUrl(c))
+      );
+      const finalCards = backendHasImage ? cards : [{ type: "gallery", images: [localUrl] }, ...cards];
+
+      setMessages((prev) => {
+        const copy = [...prev];
+        copy[index] = { role: "assistant", content: md, cards: finalCards, meta: { fromImage: true } };
+        return copy;
+      });
+      setInput("");
+    } catch (e) {
+      setMessages((prev) => {
+        const copy = [...prev];
+        copy[index] = { ...copy[index], content: "Image analysis failed. Please try again." };
+        return copy;
+      });
+    } finally {
+      if (localUrl) setTimeout(() => URL.revokeObjectURL(localUrl), 60000);
+    }
+  };
+
+  /* ---------------------- menu helpers ---------------------- */
+  const clearAll = () => {
+    setMessages([]);
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(MEM_KEY);
+  };
+  const newChat = () => {
+    setMessages([]);
+    localStorage.removeItem(STORAGE_KEY);
+    setInput("");
+    try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch {}
+  };
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  /* ---------------------- render ---------------------- */
+  return (
+    <div className="flex flex-col min-h-[100svh]">
+      {/* Header */}
+      <header className="sticky top-0 z-40 border-b border-white/10 backdrop-blur bg-black/60">
+        <div className="max-w-4xl mx-auto px-3 py-2 flex items-center gap-2 flex-wrap relative">
+          <div className="brand text-lg font-bold">Droxion</div>
+          <div className="text-xs text-gray-400">• Lite</div>
+
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={()=>setTheme(t=> t==="dark"?"light":"dark")} className="pill-btn" title="Toggle theme">
+              {theme==="dark" ? <FiMoon /> : <FiSun />} <span style={{marginLeft:6}}>{theme==="dark"?"Dark":"Light"}</span>
+            </button>
+            <button onClick={()=>setMenuOpen(v=>!v)} className="pill-btn" title="Tools">
+              <FiPlus />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Tools menu outside header to avoid tag mismatch */}
+      {menuOpen && (
+        <>
+          <div onClick={()=>setMenuOpen(false)} style={{ position:"fixed", inset:0, zIndex:999, background:"transparent" }} />
+          <div style={{ position:"fixed", right:8, top:56, zIndex:1000 }}>
+            <ToolsMenu
+              onSendImageFile={(f)=>sendImageForAnalysis(f)}
+              onSendAnyFile={(f)=>{/* optional */}}
+              onToggleAgent={()=>setAgentOn(v=>{
+                const nv=!v;
+                setMessages(p=>[...p,{role:"assistant",content:`Agent mode ${nv?"enabled":"disabled"}.`,meta:{suppressSources:true}}]);
+                return nv;
+              })}
+              agentOn={agentOn}
+              onDeepResearch={()=>{ const q=(input||"").trim(); if(!q) return; setMessages(p=>[...p,{role:"assistant",content:"Researching…",meta:{suppressSources:true}}]); axios.post(`${API_BASE}/deepsearch`,{q,agent:agentOn}).then(r=>setMessages(p=>{const copy=[...p]; copy[copy.length-1]={role:"assistant",content:r.data?.answer||`Deep research on **${q}**`,cards:(r.data?.cards||[])}; return copy;})).catch(()=>setMessages(p=>{const copy=[...p]; copy[copy.length-1]={role:"assistant",content:"Deep research failed.",meta:{suppressSources:true}}; return copy;}));}}
+              onSetPersona={(p)=>{ setPersona(p); setMessages(m=>[...m,{role:"assistant",content:`Persona set to **${p}**.`,meta:{suppressSources:true}}]); }}
+              onCreateImage={()=>handleSend(`create image: ${input||"cinematic portrait"}`)}
+              webSearchOn={webSearchOn}
+              onToggleWebSearch={()=>{ setWebSearchOn(v=>{ const nv=!v; setMessages(m=>[...m,{role:"assistant",content:`Web search ${nv?"enabled":"disabled"}.`,meta:{suppressSources:true}}]); return nv; }); }}
+              onClearAll={clearAll}
+              onNewChat={newChat}
+              onClose={()=>setMenuOpen(false)}
+            />
+          </div>
+        </>
+      )}
+
+      {/* chat scroll area */}
+      <div ref={scrollRef} className="chat-scroll flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling:"touch" }}>
+        <div className="max-w-4xl mx-auto w-full px-3 pb-32 pt-3">
+          <div className="space-y-4">
+            {messages.map((msg, i) => {
+              const isUser = msg.role === "user";
+
+              const mediaCards = (msg.cards || []).filter(c =>
+                ["youtube", "image", "images", "gallery", "images-grid", "weather"].includes(c.type) ||
+                (c.url && isYouTube(c.url))
+              );
+
+              return (
+                <div key={i} className={`msg ${isUser ? "glass-2" : "glass"}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="small-label">{isUser ? "You" : "Droxion"}</div>
+                    {!isUser && msg.content && (
+                      <button
+                        onClick={() => copyMessage(i)}
+                        className="text-xs text-gray-400 hover:text-white inline-flex items-center gap-1"
+                        title="Copy"
+                      >
+                        <FaRegCopy /> Copy
+                      </button>
+                    )}
+                  </div>
+
+                  {/* User vs Assistant message text */}
+                  {isUser && <div className="answer expanded">{msg.content}</div>}
+                  {!isUser && msg.content && <OrganizedAnswer md={msg.content} />}
+
+                  {/* Media */}
+                  {!isUser && mediaCards.length > 0 && <MediaBlock cards={mediaCards} />}
+
+                  {/* Follow-up suggestions */}
+                  {!isUser && Array.isArray(msg.followups) && msg.followups.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-8">
+                      {msg.followups.slice(0, 3).map((s, idx) => (
+                        <button key={idx} onClick={() => handleSend(s)} className="action-btn">
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {typing && (
+              <div className="glass rounded-xl p-4">
+                <div className="h-4 w-24 bg-white/10 mb-2 rounded" />
+                <div className="h-3 w-full bg-white/10 mb-1 rounded" />
+                <div className="h-3 w-4/5 bg-white/10 mb-1 rounded" />
+                <div className="h-3 w-3/5 bg-white/10 rounded" />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Fixed preview while typing */}
+{focused && (
+  <div className={`fixed-preview fixed-panel ${input.length ? "dim-while-typing" : ""}`}>
+    <div className="max-w-4xl mx-auto px-3">
+      <div className="panel glass rounded-xl p-2 suggestions-panel">
+        <div className="mb-2">
+          <div className="px-1 text-xs text-gray-400 mb-1">Recent Headlines</div>
+          <div className="hscroll pb-1 -mx-2 pl-2 pr-4">
+            <div className="flex gap-2">
+              {(news.length ? news : Array.from({length:3})).map((c,i)=>
+                c ? (
+                  <a key={i} href={c.url} target="_blank" rel="noreferrer" className="hitem pr-3">
+                    <div className="rounded-xl overflow-hidden glass">
+                      {(() => {
+                        const pv = bestPreview(c, true);
+                        return pv
+                          ? <img src={pv.prox} alt="" className="w-full aspect-[16/9] object-cover" loading="lazy" referrerPolicy="no-referrer" onError={(e)=>{ e.currentTarget.style.display="none"; }} />
+                          : <div className="aspect-[16/9] skel" />;
+                      })()}
+                      <div className="p-3">
+                        <div className="text-[11px] text-gray-400 mb-1">{displaySource(c)}</div>
+                        <div className="text-sm font-semibold line-clamp-2 leading-tight">{c.title}</div>
+                        <div className="text:[11px] text-gray-500 mt-1">{timeAgo(c.publishedAt || c.time)}</div>
+                      </div>
+                    </div>
+                  </a>
+                ) : (
+                  <div key={i} className="hitem pr-3">
+                    <div className="rounded-xl overflow-hidden glass">
+                      <div className="aspect-[16/9] skel" />
+                      <div className="p-3">
+                        <div className="h-3 w-24 skel rounded mb-2" />
+                        <div className="h-3 w-40 skel rounded" />
+                      </div>
+                    </div>
+                  </div>
                 )
-                description = vision.choices[0].message.content.strip() or description
-            except Exception:
-                pass
+              )}
+            </div>
+          </div>
+        </div>
 
-        cards = [{"type":"gallery","images":[durl]}]
-        return ok({"ai_description": description, "cards": cards, "vision_used": tried_vision})
-    except Exception as e:
-        return err(500, "server_error", e)
+        <div className="grid grid-cols-2 gap-2 px-1 mb-2">
+          <div>{weather ? (<WeatherCard card={weather} />) : (<div className="glass rounded-lg p-6 skel" />)}</div>
+          <div className="grid grid-cols-1 gap-2">
+            {(crypto.length ? crypto.slice(0,2) : [null,null]).map((c,i)=> c ? (
+              <a key={i} href={c.url} target="_blank" rel="noreferrer" className="glass rounded-lg p-3 block">
+                <div className="text-sm font-semibold">{c.title || c.symbol || "Crypto"}</div>
+                <div className="text-xs text-gray-400">{c.meta || c.source || (c.url ? host(c.url) : "")}</div>
+                {c.price && <div className="text-base mt-1">{c.price}</div>}
+                {typeof c.change!=="undefined" && (
+                  <div className={`text-xs mt-1 ${String(c.change).startsWith("-")?"text-red-400":"text-green-400"}`}>{c.change}</div>
+                )}
+              </a>
+            ) : <div key={i} className="glass rounded-lg p-6 skel" />)}
+          </div>
+        </div>
 
-# ========= Hardened IMG Proxy =========
-@app.get("/img")
-def img_proxy():
-    """
-    Proxy remote images: /img?url=<http(s)://...>
-    Fixes CORS, follows redirects, normalizes content type.
-    """
-    url = request.args.get("url", "").strip()
-    if not url.startswith("http"):
-        return err(400, "invalid url")
+        {textSug.length>0 && (
+          <div className="mt-1">
+            <div className="px-1 text-xs text-gray-400 mb-1">Suggestions</div>
+            {textSug.map((s,i)=>(
+              <button key={i} onClick={()=>handleSend(s)} className="w-full text-left text-sm border border-white/10 rounded-md px-3 py-2 hover:bg-white/10 transition mb-2 last:mb-0">
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
+)}
 
-    try:
-        r = requests.get(
-            url,
-            stream=True,
-            timeout=18,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Droxion Image Proxy)",
-                "Accept": "image/avif,image/webp,image/apng,image/*;q=0.8,*/*;q=0.5",
-                "Referer": url.split("/", 3)[0] + "//" + url.split("/", 3)[2],
-            },
-            allow_redirects=True,
-        )
-        r.raise_for_status()
+{/* Composer */}
+<div
+  className="fixed-bottom z-50 border-t border-white/10 bg-black/80 backdrop-blur"
+  style={{ paddingBottom: "max(env(safe-area-inset-bottom), 12px)" }}
+>
+  <div className="max-w-4xl mx-auto px-3 pt-2">
+    <div className="flex items-center gap-2">
+      <div className="flex-1 rounded-2xl border border-white/12 bg-white/5 backdrop-blur px-3 py-2 focus-within:border-white/25 transition">
+        <textarea
+          ref={inputRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setTimeout(() => setFocused(false), 150)}
+          rows={1}
+          inputMode="text"
+          placeholder=""
+          className="w-full bg-transparent outline-none resize-none leading-[1.6]"
+          style={{ height: 44, maxHeight: 44, overflowY: "auto" }}
+          aria-label="Type your message"
+        />
+      </div>
+      <button
+        onClick={() => handleSend(input)}
+        className="shrink-0 h-10 px-4 rounded-2xl bg-white text-black font-semibold hover:bg-gray-200 active:scale-[0.99] transition"
+        title="Send"
+      >
+        <FiArrowRight />
+      </button>
+    </div>
 
-        mime = r.headers.get("Content-Type", "")
-        if not mime or "text/html" in mime:
-            guess = mimetypes.guess_type(url)[0]
-            mime = guess or "image/jpeg"
+    <div className="flex gap-2 flex-wrap mt-2">
+      {["Cinematic", "Anime", "Futuristic", "Fantasy", "Realistic"].map((s) => (
+        <button
+          key={s}
+          onClick={() => handleSend(`steps to do ${s.toLowerCase()} project`)}
+          className="px-3 py-1 rounded-full text-sm border border-white/12 bg-white/5 hover:bg-white hover:text-black transition"
+        >
+          {s}
+        </button>
+      ))}
+    </div>
+  </div>
+</div>
 
-        def gen():
-            for chunk in r.iter_content(64 * 1024):
-                if chunk:
-                    yield chunk
+{/* ✅ Vercel Analytics at the very bottom of the ONE return */}
+<Analytics />
+</div>
+);
+}
 
-        resp = Response(gen(), content_type=mime)
-        resp.headers["Cache-Control"] = "public, max-age=86400, immutable"
-        resp.headers["X-Accel-Buffering"] = "no"
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        return resp
-    except Exception as e:
-        return err(502, "fetch_failed", e)
-
-# ========= Replicate image tools (optional) =========
-def replicate_required():
-    if not (replicate and REPLICATE_API_TOKEN):
-        return False
-    os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
-    return True
-
-@app.post("/remix-image")
-def remix_image():
-    try:
-        if not replicate_required():
-            return err(501, "replicate_not_configured")
-        data = request.get_json(force=True, silent=True) or {}
-        img = data.get("image_base64"); prompt = data.get("prompt","")
-        strength = float(data.get("style_strength", 0.5))
-        if not img or not prompt:
-            return err(400, "image_base64 and prompt required")
-        model_ref = f"{IMG_REPIX_MODEL}:{IMG_REPIX_VERSION}" if IMG_REPIX_VERSION else IMG_REPIX_MODEL
-        out = replicate.run(model_ref, input={
-            "image": img if is_data_url(img) else str(img),
-            "prompt": prompt,
-            "num_outputs": 1,
-            "guidance_scale": 7.5,
-            "image_guidance_scale": max(0.0, min(strength,1.0))
-        })
-        urls = str_urls(out)
-        if not urls: return err(502, "no image returned from replicate")
-        return ok({"images": urls})
-    except Exception as e:
-        return err(500, "server_error", e)
-
-@app.post("/inpaint-image")
-def inpaint_image():
-    try:
-        if not replicate_required():
-            return err(501, "replicate_not_configured")
-        data = request.get_json(force=True, silent=True) or {}
-        img = data.get("image_base64"); mask = data.get("mask_base64"); prompt = data.get("prompt","")
-        if not img or not mask or not prompt:
-            return err(400, "image_base64, mask_base64 and prompt required")
-        model_ref = f"{IMG_INPAINT_MODEL}:{IMG_INPAINT_VERSION}" if IMG_INPAINT_VERSION else IMG_INPAINT_MODEL
-        out = replicate.run(model_ref, input={
-            "image": img if is_data_url(img) else str(img),
-            "mask":  mask if is_data_url(mask) else str(mask),
-            "prompt": prompt
-        })
-        urls = str_urls(out)
-        if not urls: return err(502, "no image returned from replicate")
-        return ok({"images": urls})
-    except Exception as e:
-        return err(500, "server_error", e)
-
-@app.post("/remix-face-locked")
-def remix_face_locked():
-    try:
-        if not replicate_required():
-            return err(501, "replicate_not_configured")
-        if not FACE_LOCK_MODEL:
-            return err(501, "face_lock_not_configured")
-        data = request.get_json(force=True, silent=True) or {}
-        img = data.get("image_base64")
-        prompt = data.get("prompt","")
-        id_b64 = data.get("id_image_base64") or img
-        strength = float(data.get("strength", 0.45))
-        restore = bool(data.get("restore_face", True))
-        if not img:
-            return err(400, "image_base64 required")
-
-        model_ref = f"{FACE_LOCK_MODEL}:{FACE_LOCK_VERSION}" if FACE_LOCK_VERSION else FACE_LOCK_MODEL
-        gen = replicate.run(model_ref, input={
-            "image": img if is_data_url(img) else str(img),
-            "id_image": id_b64 if is_data_url(id_b64) else str(id_b64),
-            "prompt": prompt,
-            "denoise_strength": max(0.2, min(strength, 0.8)),
-            "num_outputs": 1, "guidance_scale": 6.5
-        })
-        urls = str_urls(gen)
-        if not urls: return err(502, "no image returned from face_lock")
-
-        out_url = urls[0]
-        if restore and FACE_RESTORE_MODEL:
-            fr_ref = f"{FACE_RESTORE_MODEL}:{FACE_RESTORE_VERSION}" if FACE_RESTORE_VERSION else FACE_RESTORE_MODEL
-            fr = replicate.run(fr_ref, input={"image": out_url, "fidelity": 0.7})
-            fr_urls = str_urls(fr)
-            if fr_urls: out_url = fr_urls[0]
-
-        return ok({"images":[out_url]})
-    except Exception as e:
-        return err(500, "server_error", e)
-
-@app.post("/bg-swap")
-def bg_swap():
-    try:
-        if not replicate_required():
-            return err(501, "replicate_not_configured")
-        if not (BG_REMOVE_MODEL and (BG_REMOVE_VERSION or ":" not in BG_REMOVE_MODEL)):
-            return err(501, "bg_swap_not_configured", "Set BG_REMOVE_MODEL/BG_REMOVE_VERSION")
-        if not (BG_COMPOSE_MODEL and (BG_COMPOSE_VERSION or ":" not in BG_COMPOSE_MODEL)):
-            return err(501, "bg_swap_not_configured", "Set BG_COMPOSE_MODEL/BG_COMPOSE_VERSION")
-
-        data = request.get_json(force=True, silent=True) or {}
-        img = data.get("image_base64"); prompt = data.get("prompt","")
-        if not img or not prompt:
-            return err(400, "image_base64 and prompt required")
-
-        rm_ref = f"{BG_REMOVE_MODEL}:{BG_REMOVE_VERSION}" if BG_REMOVE_VERSION else BG_REMOVE_MODEL
-        cut = replicate.run(rm_ref, input={"image": img if is_data_url(img) else str(img)})
-        cut_urls = str_urls(cut)
-        if not cut_urls: return err(502, "background removal failed")
-
-        bg_ref = f"{BG_COMPOSE_MODEL}:{BG_COMPOSE_VERSION}" if BG_COMPOSE_VERSION else BG_COMPOSE_MODEL
-        bg = replicate.run(bg_ref, input={"prompt": prompt, "width":1024, "height":1024})
-        bg_urls = str_urls(bg)
-        if not bg_urls: return err(502, "background generation failed")
-
-        return ok({"subject_png": cut_urls[:1], "background": bg_urls[:1]})
-    except Exception as e:
-        return err(500, "server_error", e)
-
-# ========= Main =========
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+export default AIChat;
