@@ -727,35 +727,94 @@ def analyze_image():
 # ========= ORIGINAL IMAGE GENERATION =========
 @app.post("/generate-image")
 def generate_image():
-    """Generate one original image and return a browser-renderable URL/data URL."""
+    """Generate an original image and return a normal image URL."""
     try:
+        import uuid
+
         data = request.get_json(force=True, silent=True) or {}
         prompt = str(data.get("prompt") or "").strip()
+
         if not prompt:
             return err(400, "prompt_required")
+
         if not (OPENAI_API_KEY and OpenAI):
             return err(503, "openai_image_generation_not_configured")
 
         client = OpenAI(api_key=OPENAI_API_KEY)
+
         result = client.images.generate(
             model=IMAGE_GENERATION_MODEL,
             prompt=prompt,
             size="1024x1024",
             n=1,
         )
+
         item = result.data[0] if result.data else None
+
         if not item:
             return err(502, "image_provider_returned_no_image")
 
         b64 = getattr(item, "b64_json", None)
-        url = getattr(item, "url", None)
-        image = f"data:image/png;base64,{b64}" if b64 else url
-        if not image:
+        image_url = getattr(item, "url", None)
+
+        if b64:
+            generated_dir = "/tmp/droxion_generated_images"
+            os.makedirs(generated_dir, exist_ok=True)
+
+            image_id = f"{uuid.uuid4().hex}.png"
+            image_path = os.path.join(generated_dir, image_id)
+
+            with open(image_path, "wb") as generated_file:
+                generated_file.write(base64.b64decode(b64))
+
+            image_url = (
+                f"{request.host_url.rstrip('/')}"
+                f"/generated-image/{image_id}"
+            )
+
+        if not image_url:
             return err(502, "image_provider_returned_no_image")
 
-        return ok({"image": image, "model": IMAGE_GENERATION_MODEL})
+        return ok({
+            "image": image_url,
+            "model": IMAGE_GENERATION_MODEL
+        })
+
     except Exception as e:
-        return jsonify({"ok": False, "error": "image_generation_failed", "detail": str(e)}), 500
+        return jsonify({
+            "ok": False,
+            "error": "image_generation_failed",
+            "detail": str(e)
+        }), 500
+
+
+@app.get("/generated-image/<image_id>")
+def generated_image(image_id):
+    from flask import send_file
+
+    if (
+        not image_id.endswith(".png")
+        or "/" in image_id
+        or "\\" in image_id
+    ):
+        return err(400, "invalid_image_id")
+
+    image_path = os.path.join(
+        "/tmp/droxion_generated_images",
+        image_id
+    )
+
+    if not os.path.isfile(image_path):
+        return err(404, "generated_image_not_found")
+
+    response = send_file(
+        image_path,
+        mimetype="image/png",
+        max_age=86400
+    )
+
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 # ========= Hardened IMG Proxy =========
 @app.get("/img")
