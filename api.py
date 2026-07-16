@@ -978,6 +978,237 @@ def bg_swap():
     except Exception as e:
         return err(500, "server_error", e)
 
+
+# ========= DTC CAMPAIGN GENERATOR =========
+@app.post("/generate-campaign")
+def generate_campaign():
+    """
+    JSON body:
+    {
+      "productName": "...",
+      "brandName": "...",
+      "productUrl": "...",
+      "price": "...",
+      "currency": "USD",
+      "targetCountry": "...",
+      "campaignGoal": "...",
+      "brandTone": "...",
+      "targetCustomer": "...",
+      "productDescription": "...",
+      "keyBenefits": "...",
+      "specialOffer": "..."
+    }
+
+    Returns:
+    {
+      "ok": true,
+      "campaign": {
+        "product_summary": "...",
+        "customer_avatar": {...},
+        "positioning": {...},
+        "marketing_strategy": {...},
+        "ad_angles": [...],
+        "headlines": [...],
+        "facebook_posts": [...],
+        "instagram_posts": [...],
+        "email_campaign": {...},
+        "video_scripts": [...],
+        "hashtags": [...]
+      },
+      "model": "gpt-4o-mini"
+    }
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+
+        product_name = str(data.get("productName") or "").strip()
+        brand_name = str(data.get("brandName") or "").strip()
+        product_url = str(data.get("productUrl") or "").strip()
+        price = str(data.get("price") or "").strip()
+        currency = str(data.get("currency") or "USD").strip()
+        target_country = str(data.get("targetCountry") or "United States").strip()
+        campaign_goal = str(data.get("campaignGoal") or "Increase Sales").strip()
+        brand_tone = str(data.get("brandTone") or "Professional").strip()
+        target_customer = str(data.get("targetCustomer") or "").strip()
+        product_description = str(data.get("productDescription") or "").strip()
+        key_benefits = str(data.get("keyBenefits") or "").strip()
+        special_offer = str(data.get("specialOffer") or "").strip()
+
+        if not product_name:
+            return err(400, "product_name_required")
+
+        if not brand_name:
+            return err(400, "brand_name_required")
+
+        if not product_description:
+            return err(400, "product_description_required")
+
+        if not target_customer:
+            return err(400, "target_customer_required")
+
+        if not key_benefits:
+            return err(400, "key_benefits_required")
+
+        client = gpt_client()
+
+        if not client:
+            return err(503, "openai_not_configured")
+
+        system_prompt = """
+You are Droxion, an expert direct-to-consumer marketing strategist.
+
+Create a practical, specific and conversion-focused campaign for the supplied
+product. Do not make unsupported claims. Do not invent certifications,
+testimonials, medical outcomes or guarantees. When details are missing, make
+clearly labeled strategic suggestions instead of presenting assumptions as facts.
+
+Return valid JSON only. Use exactly these top-level keys:
+
+product_summary
+customer_avatar
+positioning
+marketing_strategy
+ad_angles
+headlines
+facebook_posts
+instagram_posts
+email_campaign
+video_scripts
+hashtags
+
+Required structure:
+
+{
+  "product_summary": {
+    "overview": "string",
+    "main_problem_solved": "string",
+    "key_strengths": ["string"],
+    "risks_or_gaps": ["string"]
+  },
+  "customer_avatar": {
+    "primary_customer": "string",
+    "demographics": ["string"],
+    "pain_points": ["string"],
+    "desires": ["string"],
+    "buying_triggers": ["string"],
+    "objections": ["string"]
+  },
+  "positioning": {
+    "positioning_statement": "string",
+    "value_proposition": "string",
+    "differentiators": ["string"],
+    "recommended_offer": "string"
+  },
+  "marketing_strategy": {
+    "campaign_goal": "string",
+    "core_message": "string",
+    "funnel_plan": ["string"],
+    "content_pillars": ["string"],
+    "recommended_channels": ["string"]
+  },
+  "ad_angles": [
+    {
+      "name": "string",
+      "hook": "string",
+      "concept": "string",
+      "call_to_action": "string"
+    }
+  ],
+  "headlines": ["string"],
+  "facebook_posts": [
+    {
+      "title": "string",
+      "copy": "string",
+      "call_to_action": "string"
+    }
+  ],
+  "instagram_posts": [
+    {
+      "format": "string",
+      "caption": "string",
+      "visual_direction": "string",
+      "call_to_action": "string"
+    }
+  ],
+  "email_campaign": {
+    "subject_lines": ["string"],
+    "preview_text": "string",
+    "email_body": "string",
+    "call_to_action": "string"
+  },
+  "video_scripts": [
+    {
+      "title": "string",
+      "duration": "string",
+      "hook": "string",
+      "scenes": ["string"],
+      "voiceover": "string",
+      "call_to_action": "string"
+    }
+  ],
+  "hashtags": ["string"]
+}
+
+Generate:
+- 6 ad angles
+- 10 headlines
+- 3 Facebook posts
+- 3 Instagram posts
+- 3 short video scripts
+- 12 relevant hashtags
+"""
+
+        user_prompt = f"""
+PRODUCT INFORMATION
+
+Product name: {product_name}
+Brand name: {brand_name}
+Product URL: {product_url or "Not provided"}
+Price: {currency} {price or "Not provided"}
+Target country: {target_country}
+Campaign goal: {campaign_goal}
+Brand tone: {brand_tone}
+Target customer: {target_customer}
+Product description: {product_description}
+Key benefits: {key_benefits}
+Special offer: {special_offer or "No current offer provided"}
+
+Create the complete campaign now.
+"""
+
+        model = os.getenv("CAMPAIGN_GENERATION_MODEL", "gpt-4o-mini")
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": user_prompt.strip()},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.6,
+        )
+
+        raw_content = response.choices[0].message.content or "{}"
+
+        try:
+            campaign = json.loads(raw_content)
+        except json.JSONDecodeError as parse_error:
+            return err(
+                502,
+                "campaign_provider_returned_invalid_json",
+                parse_error,
+            )
+
+        return ok({
+            "campaign": campaign,
+            "model": model,
+        })
+
+    except Exception as e:
+        print("CAMPAIGN GENERATION ERROR:", str(e))
+        return err(500, "campaign_generation_failed", e)
+
+
 # ========= Main =========
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
