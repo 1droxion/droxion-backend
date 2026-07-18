@@ -186,7 +186,7 @@ def stats_active():
     })
 
 # =========================================================================
-# ---- Day 5: Secure Webhook Receiver + OpenAI + Supabase REST Engine ----
+# ---- Secure Webhook Receiver + OpenAI + Supabase REST Engine ----
 # =========================================================================
 @app.route("/api/webhooks/shopify/product-create", methods=["POST"])
 def shopify_product_create():
@@ -213,7 +213,7 @@ def shopify_product_create():
     try:
         payload = json.loads(raw_data.decode("utf-8")) if raw_data else {}
     except Exception:
-        return jsonify({"success": False, "error": "Malformed JSON payload payload"}), 400
+        return jsonify({"success": False, "error": "Malformed JSON payload"}), 400
 
     product_id   = payload.get("id")
     title        = payload.get("title", "")
@@ -263,16 +263,16 @@ def shopify_product_create():
     # 4. Stream Data To Supabase via Secured Network Hooks
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
         print("Database warnings: Supabase credentials are empty strings.")
-        return jsonify({"success": True, "warning": "Ads generated but DB configurations are missing"}), 200
+        return jsonify({"success": True, "warning": "Ads generated but DB configurations are missing", "captions": captions_array}), 200
 
     headers = {
         "apikey": SUPABASE_ANON_KEY,
         "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates" # Upsert strategy
+        "Prefer": "resolution=merge-duplicates" 
     }
 
-    # First injection: Sync product parameters
+    # Sync product parameters into database
     product_endpoint = f"{SUPABASE_URL}/rest/v1/shopify_products"
     product_payload = {
         "product_id": product_id,
