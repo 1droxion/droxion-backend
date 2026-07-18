@@ -16,7 +16,7 @@ import hmac
 import hashlib
 from urllib.parse import urlencode
 import requests
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, redirect  # Added redirect to fix name crash
 from flask_cors import CORS
 
 # ========= Optional AI / APIs =========
@@ -239,7 +239,7 @@ def shopify_product_create():
                 "content": (
                     "You are an expert DTC Facebook Ads copywriter. "
                     "Return ONLY valid JSON with the following structure: "
-                    '{"captions":["caption 1","caption 2","caption 3"]}. '
+                    '{"captions":["caption 1","caption 2","caption 3"]}. "'
                     "Do not include markdown, backticks, or any extra text."
                 ),
             },
@@ -262,8 +262,7 @@ def shopify_product_create():
 
     # 4. Stream Data To Supabase via Secured Network Hooks
     if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        print("Database warnings: Supabase credentials are empty strings.")
-        return jsonify({"success": True, "warning": "Ads generated but DB configurations are missing", "captions": captions_array}), 200
+        return jsonify({"success": True, "warning": "Ads generated but DB configurations missing", "captions": captions_array}), 200
 
     headers = {
         "apikey": SUPABASE_ANON_KEY,
@@ -281,3 +280,5 @@ def shopify_product_create():
         "vendor": vendor
     }
     
+    requests.post(product_endpoint, headers=headers, json=product_payload, timeout=10)
+
