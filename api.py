@@ -20,12 +20,15 @@ from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
 # ========= Optional AI / APIs =========
-# pip install: openai anthropic google-generativeai replicate
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
 GOOGLE_API_KEY      = os.getenv("GOOGLE_API_KEY", "")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
-YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "")  # <-- add this on Render
+YOUTUBE_API_KEY     = os.getenv("YOUTUBE_API_KEY", "") 
+
+# ========= Supabase REST Parameters =========
+SUPABASE_URL        = os.getenv("SUPABASE_URL", os.getenv("VITE_SUPABASE_URL", ""))
+SUPABASE_ANON_KEY   = os.getenv("SUPABASE_ANON_KEY", os.getenv("VITE_SUPABASE_ANON_KEY", ""))
 
 try:
     from openai import OpenAI
@@ -46,19 +49,19 @@ except Exception:
 
 # ========= Optional image tool models (Replicate) =========
 IMG_REPIX_MODEL   = os.getenv("IMG_REPIX_MODEL", "timbrooks/instruct-pix2pix")
-IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")     # set explicit hash for stability
+IMG_REPIX_VERSION = os.getenv("IMG_REPIX_VERSION", "")     
 
 IMG_INPAINT_MODEL   = os.getenv("IMG_INPAINT_MODEL", "stability-ai/stable-diffusion-inpainting")
 IMG_INPAINT_VERSION = os.getenv("IMG_INPAINT_VERSION", "")
 
-FACE_LOCK_MODEL   = os.getenv("FACE_LOCK_MODEL", "")       # e.g. "tencentarc/instantid"
+FACE_LOCK_MODEL   = os.getenv("FACE_LOCK_MODEL", "")       
 FACE_LOCK_VERSION = os.getenv("FACE_LOCK_VERSION", "")
-FACE_RESTORE_MODEL   = os.getenv("FACE_RESTORE_MODEL", "") # e.g. "sczhou/codeformer"
+FACE_RESTORE_MODEL   = os.getenv("FACE_RESTORE_MODEL", "") 
 FACE_RESTORE_VERSION = os.getenv("FACE_RESTORE_VERSION", "")
 
-BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")       # e.g. "cjwbw/rembg"
+BG_REMOVE_MODEL   = os.getenv("BG_REMOVE_MODEL", "")       
 BG_REMOVE_VERSION = os.getenv("BG_REMOVE_VERSION", "")
-BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")     # e.g. "black-forest-labs/flux-schnell"
+BG_COMPOSE_MODEL   = os.getenv("BG_COMPOSE_MODEL", "")     
 BG_COMPOSE_VERSION = os.getenv("BG_COMPOSE_VERSION", "")
 IMAGE_GENERATION_MODEL = os.getenv("IMAGE_GENERATION_MODEL", "gpt-image-1")
 
@@ -75,12 +78,9 @@ def home():
 
 # ===== DAU / WAU / MAU =====
 from datetime import datetime, timedelta, timezone
-import json, os
 from dateutil import parser
 import pytz
-from flask import request, jsonify
 
-# Write & read the SAME file; /tmp is always writable on Render
 LOG_PATH = os.getenv("USER_LOGS_PATH", "/tmp/user_logs.json")
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 if not os.path.exists(LOG_PATH):
@@ -90,7 +90,6 @@ if not os.path.exists(LOG_PATH):
 NY = pytz.timezone("America/New_York")
 
 def iter_logs(path):
-    """Yield dict events from file that can be JSONL or a JSON array."""
     if not os.path.exists(path):
         return
     with open(path, "r", encoding="utf-8") as f:
@@ -98,7 +97,7 @@ def iter_logs(path):
         if not first:
             return
         f.seek(0)
-        if first == "[":  # JSON array
+        if first == "[":  
             try:
                 arr = json.load(f)
                 for item in arr:
@@ -106,7 +105,7 @@ def iter_logs(path):
                         yield item
             except Exception:
                 return
-        else:  # JSONL
+        else:  
             for line in f:
                 line = line.strip()
                 if not line:
@@ -119,7 +118,6 @@ def iter_logs(path):
                     continue
 
 def to_ny_date(dt):
-    """Return date in America/New_York from ISO string or datetime."""
     if isinstance(dt, str):
         try:
             dt = parser.isoparse(dt)
@@ -128,12 +126,6 @@ def to_ny_date(dt):
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(NY).date()
-
-def iso_week_start(d):
-    return d - timedelta(days=d.weekday())
-
-def month_key(d):
-    return f"{d.year:04d}-{d.month:02d}"
 
 # ---- tracking: append a visit/event ----
 @app.route("/track", methods=["POST"])
@@ -152,7 +144,7 @@ def track():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ---- (optional) quick debug: last 20 raw log lines ----
+# ---- quick debug: last 20 raw log lines ----
 @app.route("/logs", methods=["GET"])
 def view_logs():
     if not os.path.exists(LOG_PATH):
@@ -166,8 +158,8 @@ def view_logs():
 def stats_active():
     today_ny = datetime.now(NY).date()
     day_cutoff = today_ny
-    week_cutoff = today_ny - timedelta(days=6)   # last 7 days
-    month_cutoff = today_ny - timedelta(days=29) # last 30 days
+    week_cutoff = today_ny - timedelta(days=6)   
+    month_cutoff = today_ny - timedelta(days=29) 
 
     dau_set, wau_set, mau_set = set(), set(), set()
 
@@ -178,7 +170,6 @@ def stats_active():
             continue
         d = to_ny_date(ts)
         if not d:
-            # fallback: count as today if parsing failed
             d = today_ny
 
         if d >= day_cutoff:
@@ -194,94 +185,99 @@ def stats_active():
         "mau": len(mau_set)
     })
 
-# ========= Helpers =========
-def ok(data=None, **kw):
-    out = {"ok": True}
-    if data and isinstance(data, dict):
-        out.update(data)
-    out.update(kw)
-    return jsonify(out)
-
-def err(status, msg, detail=None):
-    out = {"ok": False, "error": msg}
-    if detail:
-        out["detail"] = str(detail)
-    return jsonify(out), status
-
-def str_urls(rep_result):
-    """Normalize Replicate outputs to List[str] of URLs."""
-    if rep_result is None:
-        return []
-    if isinstance(rep_result, list):
-        out = []
-        for x in rep_result:
-            try:
-                out.append(str(x.url) if hasattr(x, "url") else str(x))
-            except Exception:
-                out.append(str(x))
-        return out
-    try:
-        return [str(rep_result.url)] if hasattr(rep_result, "url") else [str(rep_result)]
-    except Exception:
-        return [repr(rep_result)]
-
-def dataurl(file_bytes: bytes, mime: str):
-    b64 = base64.b64encode(file_bytes).decode("ascii")
-    return f"data:{mime};base64,{b64}"
-
-def is_data_url(s: str) -> bool:
-    return isinstance(s, str) and s.strip().startswith("data:image/")
-
-def get_json(url, params=None, headers=None, timeout=12):
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
-
-def get_text(url, params=None, headers=None, timeout=12):
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        return r.text
-    except Exception:
-        return None
-
 # =========================================================================
-# ---- Day 3: Secured Shopify Webhook Receiver Endpoint ----
+# ---- Day 5: Secure Webhook Receiver + OpenAI + Supabase REST Engine ----
 # =========================================================================
 @app.route("/api/webhooks/shopify/product-create", methods=["POST"])
-def shopify_product_create_webhook():
+def shopify_product_create():
+    shopify_secret = os.environ.get("SHOPIFY_API_SECRET", "")
+    if not shopify_secret:
+        return jsonify({"success": False, "error": "SHOPIFY_API_SECRET not configured"}), 500
+
+    hmac_header = request.headers.get("X-Shopify-Hmac-SHA256", "")
+    raw_data = request.get_data()
+
+    # 1. Verify Cryptographic Integrity
+    digest = hmac.new(
+        shopify_secret.encode("utf-8"),
+        raw_data,
+        hashlib.sha256,
+    ).digest()
+
+    calculated_hmac = base64.b64encode(digest).decode("utf-8")
+
+    if not hmac.compare_digest(calculated_hmac, hmac_header):
+        return jsonify({"success": False, "error": "Invalid HMAC signature matching"}), 401
+
+    # 2. Extract Data Tokens directly from raw input byte buffers
     try:
-        shopify_secret = os.getenv("SHOPIFY_API_SECRET", "")
-        if not shopify_secret:
-            return jsonify({"ok": False, "error": "Server configuration missing secret"}), 500
+        payload = json.loads(raw_data.decode("utf-8")) if raw_data else {}
+    except Exception:
+        return jsonify({"success": False, "error": "Malformed JSON payload payload"}), 400
 
-        # 1. Capture raw request payload for strict cryptographic signature matching
-        raw_data = request.get_data()
-        received_hmac = request.headers.get("X-Shopify-Hmac-SHA256", "")
+    product_id   = payload.get("id")
+    title        = payload.get("title", "")
+    body_html    = payload.get("body_html", "")
+    vendor       = payload.get("vendor", "")
+    product_type = payload.get("product_type", "")
 
-        if not received_hmac:
-            return jsonify({"ok": False, "error": "Missing signature verification token"}), 401
+    if not product_id or not title:
+        return jsonify({"success": False, "error": "Missing fundamental tracking variables"}), 400
 
-        # 2. Compute security hash
-        computed_hmac = base64.b64encode(
-            hmac.new(shopify_secret.encode("utf-8"), raw_data, hashlib.sha256).digest()
-        ).decode("utf-8")
+    # 3. Request Multi-Channel Conversion Copies from AI Engine
+    if not OpenAI:
+        return jsonify({"success": False, "error": "OpenAI SDK missing configuration"}), 500
+        
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
-        # 3. Secure matching check to verify legitimacy
-        if not hmac.compare_digest(computed_hmac, received_hmac):
-            return jsonify({"ok": False, "error": "Invalid webhook cryptographic signature"}), 401
+    completion = client.chat.completions.create(
+        model="gpt-4o-mini",
+        response_format={"type": "json_object"},
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert DTC Facebook Ads copywriter. "
+                    "Return ONLY valid JSON with the following structure: "
+                    '{"captions":["caption 1","caption 2","caption 3"]}. '
+                    "Do not include markdown, backticks, or any extra text."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Generate 3 high-converting Facebook ad captions for this Shopify product.\n\n"
+                    f"Product ID: {product_id}\n"
+                    f"Title: {title}\n"
+                    f"Description: {body_html}\n"
+                    f"Vendor: {vendor}\n"
+                    f"Product Type: {product_type}"
+                ),
+            },
+        ],
+    )
 
-        # 4. Extract target data tokens
-        payload = json.loads(raw_data.decode("utf-8"))
-        product_info = {
-            "id": payload.get("id"),
-            "title": payload.get("title", ""),
-            "body_html": payload.get("body_html", ""),
-            "vendor": payload.get("vendor", ""),
-            "product_type": payload.get("product_type", "")
-        }
+    generated_data = json.loads(completion.choices[0].message.content)
+    captions_array = generated_data.get("captions", [])
 
-        # Temp log to terminal verification stream
+    # 4. Stream Data To Supabase via Secured Network Hooks
+    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        print("Database warnings: Supabase credentials are empty strings.")
+        return jsonify({"success": True, "warning": "Ads generated but DB configurations are missing"}), 200
+
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates" # Upsert strategy
+    }
+
+    # First injection: Sync product parameters
+    product_endpoint = f"{SUPABASE_URL}/rest/v1/shopify_products"
+    product_payload = {
+        "product_id": product_id,
+        "title": title,
+        "description": body_html,
+        "vendor": vendor
+    }
+    
