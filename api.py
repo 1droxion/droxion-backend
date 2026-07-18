@@ -1212,3 +1212,32 @@ Create the complete campaign now.
 # ========= Main =========
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+@app.route("/api/webhooks/shopify/product-create", methods=["POST"])
+def shopify_product_create():
+    shopify_secret = os.environ.get("SHOPIFY_API_SECRET")
+    if not shopify_secret:
+        return jsonify({"error": "SHOPIFY_API_SECRET not configured"}), 500
+
+    hmac_header = request.headers.get("X-Shopify-Hmac-SHA256", "")
+    raw_data = request.get_data()
+
+    digest = hmac.new(
+        shopify_secret.encode("utf-8"),
+        raw_data,
+        hashlib.sha256,
+    ).digest()
+
+    calculated_hmac = base64.b64encode(digest).decode("utf-8")
+
+    if not hmac.compare_digest(calculated_hmac, hmac_header):
+        return jsonify({"success": False, "error": "Invalid HMAC"}), 401
+
+    payload = request.get_json(silent=True) or {}
+
+    product_id = payload.get("id")
+    title = payload.get("title")
+    body_html = payload.get("body_html")
+    vendor = payload.get("vendor")
+    product_type = payload.get("product_type")
+
+    return jsonify({"success": True}), 200
