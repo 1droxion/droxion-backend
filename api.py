@@ -69,6 +69,9 @@ IMAGE_GENERATION_MODEL = os.getenv("IMAGE_GENERATION_MODEL", "gpt-image-1")
 app = Flask(__name__)
 CORS(app)
 
+from creator_worker import creator_worker_bp
+app.register_blueprint(creator_worker_bp)
+
 @app.route("/")
 def home():
     return jsonify({
